@@ -1,0 +1,102 @@
+[
+  {
+    "timestamp": "2025-09-10 18:04:20",
+    "content": "Configuration loaded",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-10 19:23:20",
+    "content": "Backup completed",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-10 20:16:42",
+    "content": "File uploaded successfully",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-10 21:31:15",
+    "content": "ALERT: Possible SQL injection attempt detected",
+    "level": "ERROR"
+  },
+  {
+    "timestamp": "2025-09-10 21:54:40",
+    "content": "CRITICAL: System memory usage at 98%",
+    "level": "ERROR"
+  },
+  {
+    "timestamp": "2025-09-10 22:55:52",
+    "content": "File uploaded successfully",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-10 23:02:05",
+    "content": "Cache updated",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-11 00:32:11",
+    "content": "Database connection established",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-11 01:25:38",
+    "content": "Data synchronized",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-11 02:13:36",
+    "content": "Cache updated",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-11 02:47:36",
+    "content": "Database connection established",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-11 03:11:19",
+    "content": "Data synchronized",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-11 04:14:18",
+    "content": "Configuration loaded",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-11 10:20:09",
+    "content": "User login successful",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-11 11:45:06",
+    "content": "Backup completed",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-11 11:50:36",
+    "content": "File uploaded successfully",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-11 12:39:50",
+    "content": "Configuration loaded",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-11 13:59:59",
+    "content": "Session created",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-11 14:10:58",
+    "content": "Data synchronized",
+    "level": "INFO"
+  },
+  {
+    "timestamp": "2025-09-11 15:11:38",
+    "content": "Request processed",
+    "level": "INFO"
+  }
+]

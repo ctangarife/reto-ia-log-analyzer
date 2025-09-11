@@ -1,0 +1,38 @@
+# Configuración del servicio Anomaly Detector
+service:
+  name: "anomaly-detector"
+  version: "1.0.0"
+  port: 8000
+
+# Configuración de detección de anomalías
+anomaly_detection:
+  contamination: 0.1  # 10% de anomalías esperadas
+  n_estimators: 100
+  random_state: 42
+
+# Configuración del LLM
+llm:
+  service_url: "http://ollama-service:11434"
+  model_name: "nidum-gemma-2b-uncensored-gguf"
+  timeout: 30
+  temperature: 0.7
+  max_tokens: 150
+
+# Palabras clave sospechosas para detección
+suspicious_keywords:
+  - "error"
+  - "failed"
+  - "unauthorized"
+  - "exception"
+  - "timeout"
+  - "denied"
+  - "critical"
+  - "fatal"
+  - "panic"
+  - "abort"
+
+# Configuración de reportes
+reports:
+  directory: "/app/reports"
+  format: "json"
+  include_timestamp: true

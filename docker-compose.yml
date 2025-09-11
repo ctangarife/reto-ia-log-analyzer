@@ -1,0 +1,106 @@
+version: '3.8'
+
+services:
+  anomaly-detector:
+    build:
+      context: ./
+      dockerfile: ./build/anomaly-detector/Dockerfile
+    container_name: logs-anomaly-detector
+    restart: unless-stopped
+    volumes:
+      - ./data/anomaly-detector:/app
+      - ./data/anomaly-detector/reports:/app/reports
+      - ./data/anomaly-detector/chunks:/app/chunks
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_SERVICE_URL=http://ollama-service:11434
+      - MODEL_NAME=nidum-gemma-2b-uncensored-gguf
+      - PYTHONUNBUFFERED=1
+    command: >
+      sh -c "pip install -r requirements.txt &&
+             uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+    networks:
+      logs_anomaly_net:
+        aliases:
+          - anomaly-detector
+    depends_on:
+      - ollama-service
+
+  ollama-service:
+    container_name: logs-anomaly-ollama
+    restart: unless-stopped
+    build:
+      context: ./
+      dockerfile: ./build/ollama/Dockerfile
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+        limits:
+          memory: 16G
+    volumes:
+      - ./data/models/ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_DEVICE=nvidia
+      - OLLAMA_MODEL=nidum-gemma-2b-uncensored-gguf
+    networks:
+      logs_anomaly_net:
+        aliases:
+          - ollama-service
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:11434/api/tags" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  logs-anomaly-ui:
+    build:
+      context: ./
+      dockerfile: ./build/ui/Dockerfile
+    container_name: logs-anomaly-ui
+    volumes:
+      - ./data/ui:/app
+      - ./data/static:/app/dist
+    environment:
+      - NODE_ENV=development
+    command: sh -c "cd /app && npm install && npm run build && cp -r dist/* /app/dist/"
+    depends_on:
+      - anomaly-detector
+    networks:
+      logs_anomaly_net:
+        aliases:
+          - logs-anomaly-ui
+    restart: "no"
+
+  logs-anomaly-nginx:
+    image: nginx:stable-alpine
+    container_name: logs-anomaly-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./data/static:/usr/share/nginx/html:ro
+    depends_on:
+      logs-anomaly-ui:
+        condition: service_completed_successfully
+      anomaly-detector:
+        condition: service_healthy
+    networks:
+      logs_anomaly_net:
+        aliases:
+          - logs-anomaly-nginx
+    restart: unless-stopped
+    command: ["nginx", "-g", "daemon off;"]
+
+networks:
+  logs_anomaly_net:
+    driver: bridge
+    name: logs_anomaly_net
