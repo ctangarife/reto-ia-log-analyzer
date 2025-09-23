@@ -1,11 +1,84 @@
 version: '3.8'
 
 services:
+  # Servicio de MongoDB
+  mongodb:
+    image: mongo:7.0
+    container_name: logs-analyze-mongodb
+    restart: unless-stopped
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=password
+      - MONGO_INITDB_DATABASE=logsanomaly
+    volumes:
+      - mongodb_data:/data/db
+      - ./build/mongodb/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    ports:
+      - "27017:27017"
+    networks:
+      logs_analyze_net:
+        aliases:
+          - mongodb
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  # Servicio de PostgreSQL
+  postgres:
+    image: postgres:15-alpine
+    container_name: logs-analyze-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=logsanomaly
+      - POSTGRES_USER=anomaly_user
+      - POSTGRES_PASSWORD=anomaly_password
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./data/anomaly-detector/database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5432:5432"
+    networks:
+      logs_analyze_net:
+        aliases:
+          - postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anomaly_user -d logsanomaly"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Servicio de Redis
+  redis:
+    image: redis:7.2-alpine
+    container_name: logs-analyze-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+      - ./build/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    networks:
+      logs_analyze_net:
+        aliases:
+          - redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
   anomaly-detector:
     build:
       context: ./
       dockerfile: ./build/anomaly-detector/Dockerfile
-    container_name: logs-anomaly-detector
+    container_name: logs-analyze-detector
     restart: unless-stopped
     volumes:
       - ./data/anomaly-detector:/app
@@ -15,20 +88,30 @@ services:
       - "8000:8000"
     environment:
       - OLLAMA_SERVICE_URL=http://ollama-service:11434
-      - MODEL_NAME=nidum-gemma-2b-uncensored-gguf
+      - MODEL_NAME=qwen2.5:3b
       - PYTHONUNBUFFERED=1
+      - MONGODB_URI=mongodb://admin:password@mongodb:27017/logsanomaly?authSource=admin
+      - POSTGRES_DSN=postgresql://anomaly_user:anomaly_password@postgres:5432/logsanomaly
+      - REDIS_URL=redis://redis:6379/0
     command: >
       sh -c "pip install -r requirements.txt &&
              uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
     networks:
-      logs_anomaly_net:
+      logs_analyze_net:
         aliases:
           - anomaly-detector
     depends_on:
-      - ollama-service
+      mongodb:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama-service:
+        condition: service_healthy
 
   ollama-service:
-    container_name: logs-anomaly-ollama
+    container_name: logs-analyze-ollama
     restart: unless-stopped
     build:
       context: ./
@@ -49,9 +132,9 @@ services:
     environment:
       - OLLAMA_HOST=0.0.0.0
       - OLLAMA_DEVICE=nvidia
-      - OLLAMA_MODEL=nidum-gemma-2b-uncensored-gguf
+      - OLLAMA_MODEL=qwen2.5:3b
     networks:
-      logs_anomaly_net:
+      logs_analyze_net:
         aliases:
           - ollama-service
     healthcheck:
@@ -61,11 +144,11 @@ services:
       retries: 5
       start_period: 90s
 
-  logs-anomaly-ui:
+  logs-analyze-ui:
     build:
       context: ./
       dockerfile: ./build/ui/Dockerfile
-    container_name: logs-anomaly-ui
+    container_name: logs-analyze-ui
     volumes:
       - ./data/ui:/app
       - ./data/static:/app/dist
@@ -75,32 +158,40 @@ services:
     depends_on:
       - anomaly-detector
     networks:
-      logs_anomaly_net:
+      logs_analyze_net:
         aliases:
-          - logs-anomaly-ui
+          - logs-analyze-ui
     restart: "no"
 
-  logs-anomaly-nginx:
+  logs-analyze-nginx:
     image: nginx:stable-alpine
-    container_name: logs-anomaly-nginx
+    container_name: logs-analyze-nginx
     ports:
       - "80:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./data/static:/usr/share/nginx/html:ro
     depends_on:
-      logs-anomaly-ui:
+      logs-analyze-ui:
         condition: service_completed_successfully
       anomaly-detector:
         condition: service_healthy
     networks:
-      logs_anomaly_net:
+      logs_analyze_net:
         aliases:
-          - logs-anomaly-nginx
+          - logs-analyze-nginx
     restart: unless-stopped
     command: ["nginx", "-g", "daemon off;"]
 
 networks:
-  logs_anomaly_net:
+  logs_analyze_net:
     driver: bridge
-    name: logs_anomaly_net
+    name: logs_analyze_net
+
+volumes:
+  mongodb_data:
+    driver: local
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local

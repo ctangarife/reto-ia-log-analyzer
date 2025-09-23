@@ -1,49 +1,70 @@
 #!/bin/bash
-# Script para probar el servicio anomaly-detector
 
-echo "🧪 Probando servicio Anomaly Detector..."
+# Colores para output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
 
-# Verificar que el servicio esté corriendo
-echo "📡 Verificando health check..."
-curl -f http://localhost:8000/health || {
-    echo "❌ Error: El servicio no está respondiendo"
-    exit 1
-}
+echo -e "${YELLOW}Iniciando pruebas del servicio de detección de anomalías${NC}"
 
-echo "✅ Health check exitoso"
+# Verificar que los servicios estén corriendo
+echo -e "\n${YELLOW}Verificando servicios...${NC}"
 
-# Crear archivo de logs de prueba
-echo "📝 Creando archivo de logs de prueba..."
-cat > /tmp/test_logs.txt << 'EOF'
-2024-01-01 10:00:00 INFO User login successful
-2024-01-01 10:01:00 INFO Database connection established
-2024-01-01 10:02:00 ERROR Failed to connect to external API
-2024-01-01 10:03:00 INFO User logout successful
-2024-01-01 10:04:00 CRITICAL System memory usage exceeded 95%
-2024-01-01 10:05:00 INFO Backup process completed
-2024-01-01 10:06:00 WARNING High CPU usage detected
-2024-01-01 10:07:00 ERROR Unauthorized access attempt from IP 192.168.1.100
-2024-01-01 10:08:00 INFO Scheduled task executed successfully
-2024-01-01 10:09:00 FATAL Database corruption detected
-EOF
+services=("logs-analyze-mongodb" "logs-analyze-postgres" "logs-analyze-redis" "logs-analyze-detector")
+all_running=true
 
-# Probar detección de anomalías
-echo "🔍 Probando detección de anomalías..."
-curl -X POST "http://localhost:8000/detect" \
-     -H "Content-Type: multipart/form-data" \
-     -F "file=@/tmp/test_logs.txt" \
-     -o /tmp/anomaly_results.json
+for service in "${services[@]}"; do
+    if docker ps | grep -q $service; then
+        echo -e "${GREEN}✓ $service está corriendo${NC}"
+    else
+        echo -e "${RED}✗ $service no está corriendo${NC}"
+        all_running=false
+    fi
+done
 
-if [ $? -eq 0 ]; then
-    echo "✅ Detección de anomalías exitosa"
-    echo "📊 Resultados:"
-    cat /tmp/anomaly_results.json | jq '.' 2>/dev/null || cat /tmp/anomaly_results.json
-else
-    echo "❌ Error en detección de anomalías"
+if [ "$all_running" = false ]; then
+    echo -e "${RED}Error: Algunos servicios no están corriendo. Ejecuta docker-compose up -d${NC}"
     exit 1
 fi
 
-# Limpiar archivos temporales
-rm -f /tmp/test_logs.txt /tmp/anomaly_results.json
+# Generar datos de prueba
+echo -e "\n${YELLOW}Generando datos de prueba...${NC}"
+python generate_test_logs.py
 
-echo "🎉 Pruebas completadas exitosamente"
+# Verificar que los archivos se generaron
+if [ ! -d "test_data" ]; then
+    echo -e "${RED}Error: No se encontró el directorio test_data${NC}"
+    exit 1
+fi
+
+# Ejecutar pruebas de procesamiento
+echo -e "\n${YELLOW}Ejecutando pruebas de procesamiento...${NC}"
+python test_processing.py
+
+# Verificar resultados en MongoDB
+echo -e "\n${YELLOW}Verificando resultados en MongoDB...${NC}"
+docker exec logs-analyze-mongodb mongosh --eval '
+    db = db.getSiblingDB("logsanomaly");
+    print("Total chunks procesados: " + db.chunks.count());
+    print("Total resultados: " + db.results.count());
+    print("\nÚltimos 5 resultados:");
+    db.results.find().sort({created_at: -1}).limit(5).forEach(printjson);
+'
+
+# Verificar estadísticas en PostgreSQL
+echo -e "\n${YELLOW}Verificando estadísticas en PostgreSQL...${NC}"
+docker exec logs-analyze-postgres psql -U anomaly_user -d logsanomaly -c "
+    SELECT 
+        status, 
+        COUNT(*) as count,
+        AVG(EXTRACT(EPOCH FROM (completed_at - started_at))) as avg_processing_time
+    FROM processing_jobs 
+    GROUP BY status;
+"
+
+# Verificar métricas de Redis
+echo -e "\n${YELLOW}Verificando métricas de Redis...${NC}"
+docker exec logs-analyze-redis redis-cli INFO | grep -E "used_memory|connected_clients|total_connections_received"
+
+echo -e "\n${GREEN}Pruebas completadas${NC}"

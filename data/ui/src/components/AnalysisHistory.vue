@@ -1,4 +1,3 @@
-<!-- AnalysisHistory.vue -->
 <template>
   <div class="analysis-history">
     <div class="history-header">
@@ -36,10 +35,10 @@
              :key="groupId" 
              class="history-group">
           <div class="group-header" 
-               @click="selectGroup(groupId, group)"
+               @click="toggleGroup(groupId)"
                :class="{ active: selectedGroupId === groupId }">
             <div class="group-title">
-              <i :class="selectedGroupId === groupId ? 'pi pi-folder-open' : 'pi pi-folder'" />
+              <i :class="expandedGroups[groupId] ? 'pi pi-folder-open' : 'pi pi-folder'" />
               <span>{{ formatGroupName(groupId) }}</span>
               <span class="group-count">({{ group.length }})</span>
             </div>
@@ -58,7 +57,7 @@
                  :key="analysis.id" 
                  class="history-item"
                  :class="{ active: currentAnalysis?.id === analysis.id }"
-                 @click="setCurrentAnalysis(analysis.id)">
+                 @click="selectAnalysis(analysis)">
               <div class="item-header">
                 <span class="timestamp">{{ formatDate(analysis.timestamp) }}</span>
               </div>
@@ -79,6 +78,8 @@
 import { useAnalysisStore } from '../stores/analysisStore'
 import { storeToRefs } from 'pinia'
 import { computed, ref } from 'vue'
+import Button from 'primevue/button'
+import ProgressSpinner from 'primevue/progressspinner'
 
 const store = useAnalysisStore()
 const { analysisHistory, currentAnalysis, isLoading } = storeToRefs(store)
@@ -88,27 +89,28 @@ const { setCurrentAnalysis, clearHistory, loadReportsFromDirectory } = store
 const selectedGroupId = ref<string | null>(null)
 const expandedGroups = ref<Record<string, boolean>>({})
 
-// Función para seleccionar grupo y mostrar todos sus análisis combinados
-function selectGroup(groupId: string, group: any[]) {
-  selectedGroupId.value = groupId
-  setCurrentAnalysis(groupId)
-  // Colapsar otros grupos y expandir el seleccionado
-  Object.keys(expandedGroups.value).forEach(key => {
-    expandedGroups.value[key] = key === groupId
-  })
+// Función para seleccionar un análisis específico
+function selectAnalysis(analysis: any) {
+  // Usar directamente los datos que ya tenemos disponibles
+  setCurrentAnalysis(analysis)
+  selectedGroupId.value = analysis.fileName || 'sin_archivo'
 }
 
 // Formatear nombre del grupo para mostrar
 function formatGroupName(groupId: string) {
-  return groupId.replace(/_/g, ' ')
+  if (groupId === 'sin_archivo') {
+    return 'Sin archivo'
+  }
+  // Limpiar el nombre del archivo para mostrar
+  return groupId.replace(/_/g, ' ').replace(/\.txt$/, '').replace(/\.log$/, '')
 }
 
-// Agrupar análisis por carpeta
+// Agrupar análisis por nombre de archivo
 const groupedAnalysis = computed(() => {
   const groups: Record<string, any[]> = {}
   
   analysisHistory.value.forEach(analysis => {
-    const groupId = analysis.file_id || 'sin_grupo'
+    const groupId = analysis.fileName || 'sin_archivo'
     if (!groups[groupId]) {
       groups[groupId] = []
     }
@@ -126,6 +128,7 @@ const groupedAnalysis = computed(() => {
 // Función para expandir/colapsar grupos
 function toggleGroup(groupId: string) {
   expandedGroups.value[groupId] = !expandedGroups.value[groupId]
+  selectedGroupId.value = groupId
 }
 
 function formatDate(timestamp: string) {
