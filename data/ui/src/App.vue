@@ -51,26 +51,50 @@
     </aside>
 
     <main class="main-content">
-      <!-- Componente de procesamiento V2 -->
-      <ProcessingV2 v-if="useV2Processing && store.currentJob" />
       
-      <div v-else-if="loading" class="progress-overlay">
-        <ProgressSpinner />
-        <div class="progress-info">
-          <p>{{ typeof loading === 'string' ? loading : 'Analizando logs...' }}</p>
-          <div v-if="chunkInfo" class="chunk-details">
-            <small>Chunk {{ chunkInfo.current }}/{{ chunkInfo.total }}</small>
-            <div class="progress-bar">
-              <div 
-                class="progress-fill" 
-                :style="{ width: ((chunkInfo.current / chunkInfo.total) * 100) + '%' }"
-              ></div>
-            </div>
-          </div>
+      <div class="tabs-container">
+        <div class="tabs-header">
+          <button 
+            class="tab-button" 
+            :class="{ active: activeTab === 'analysis' }"
+            @click="activeTab = 'analysis'"
+          >
+            <i class="pi pi-chart-bar"></i>
+            Análisis
+          </button>
+          <button 
+            class="tab-button" 
+            :class="{ active: activeTab === 'monitoring' }"
+            @click="activeTab = 'monitoring'"
+          >
+            <i class="pi pi-cog"></i>
+            Monitoreo
+          </button>
         </div>
-      </div>
 
-      <div v-else-if="currentAnalysis" class="anomalies-container">
+        <div class="tab-content">
+          
+          <div v-if="activeTab === 'analysis'" class="tab-panel">
+            
+            <ProcessingV2 v-if="useV2Processing && store.currentJob" />
+            
+            <div v-else-if="loading" class="progress-overlay">
+              <ProgressSpinner />
+              <div class="progress-info">
+                <p>{{ typeof loading === 'string' ? loading : 'Analizando logs...' }}</p>
+                <div v-if="chunkInfo" class="chunk-details">
+                  <small>Chunk {{ chunkInfo.current }}/{{ chunkInfo.total }}</small>
+                  <div class="progress-bar">
+                    <div 
+                      class="progress-fill" 
+                      :style="{ width: ((chunkInfo.current / chunkInfo.total) * 100) + '%' }"
+                    ></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div v-else-if="currentAnalysis" class="anomalies-container">
         <div class="analysis-header">
           <h2>Resultados del Análisis</h2>
           <div class="analysis-stats">
@@ -123,9 +147,17 @@
       </div>
 
       <div v-else class="empty-state">
-        <i class="pi pi-file-import text-6xl text-gray-300"></i>
-        <p v-if="!currentAnalysis">Selecciona un archivo para comenzar el análisis</p>
-        <p v-else>No se encontraron anomalías en este análisis</p>
+            <i class="pi pi-file-import text-6xl text-gray-300"></i>
+            <p v-if="!currentAnalysis">Selecciona un archivo para comenzar el análisis</p>
+            <p v-else>No se encontraron anomalías en este análisis</p>
+          </div>
+          </div>
+
+          
+          <div v-if="activeTab === 'monitoring'" class="tab-panel">
+            <MonitoringDashboard />
+          </div>
+        </div>
       </div>
     </main>
   </div>
@@ -137,6 +169,7 @@ import { useAnalysisStore } from './stores/analysisStore'
 import { formatTimestamp } from './utils/formatters'
 import AnalysisHistory from './components/AnalysisHistory.vue'
 import ProcessingV2 from './components/ProcessingV2.vue'
+import MonitoringDashboard from './components/MonitoringDashboard.vue'
 import FileUpload from 'primevue/fileupload'
 import ProgressSpinner from 'primevue/progressspinner'
 import InputNumber from 'primevue/inputnumber'
@@ -145,6 +178,7 @@ const store = useAnalysisStore()
 const loading = ref<boolean | string>(false)
 const scoreFilter = ref(0.5)
 const chunkInfo = ref<{current: number, total: number} | null>(null)
+const activeTab = ref<'analysis' | 'monitoring'>('analysis')
 
 // Variable para controlar qué versión usar
 const useV2Processing = ref(true) // Cambiar a true para usar V2
@@ -429,5 +463,58 @@ function onFileUpload(event: any) {
 
 .no-details-message p {
   margin: 0.5rem 0;
+}
+
+/* Estilos para Tabs */
+.tabs-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.tabs-header {
+  display: flex;
+  background: white;
+  border-bottom: 1px solid #e0e0e0;
+  padding: 0;
+}
+
+.tab-button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 1rem 1.5rem;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border-bottom: 3px solid transparent;
+  color: #666;
+  font-weight: 500;
+}
+
+.tab-button:hover {
+  background: #f8f9fa;
+  color: #2c3e50;
+}
+
+.tab-button.active {
+  background: #f8f9fa;
+  color: #2196f3;
+  border-bottom-color: #2196f3;
+}
+
+.tab-button i {
+  font-size: 1.1rem;
+}
+
+.tab-content {
+  flex: 1;
+  overflow: hidden;
+}
+
+.tab-panel {
+  height: 100%;
+  overflow-y: auto;
 }
 </style>

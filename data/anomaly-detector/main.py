@@ -41,7 +41,7 @@ logger = logging.getLogger("anomaly_detector")
 
 # Configuración
 OLLAMA_SERVICE_URL = os.getenv("OLLAMA_SERVICE_URL", "http://ollama-service:11434")
-MODEL_NAME = os.getenv("MODEL_NAME", "nidum-gemma-2b-uncensored-gguf")
+MODEL_NAME = os.getenv("MODEL_NAME", "qwen2.5:3b")
 
 # Directorios base
 APP_DIR = "/app"
@@ -566,6 +566,7 @@ try:
     )
     from services.chunk_service import chunk_service
     from services.worker_service import worker_service
+    from services.monitoring_service import monitoring_service
     V2_AVAILABLE = True
     logger.info("✅ Módulos V2 cargados correctamente")
 except ImportError as e:
@@ -589,6 +590,12 @@ async def startup_event():
         try:
             await db_manager.connect_all()
             logger.info("✅ Todas las bases de datos conectadas")
+            
+            # Inicializar servicio de monitoreo
+            monitoring_service.set_services(db_manager, worker_service)
+            asyncio.create_task(monitoring_service.start_monitoring(interval=30))
+            logger.info("✅ Servicio de monitoreo iniciado")
+            
         except Exception as e:
             logger.error(f"❌ Error conectando bases de datos: {e}")
     else:
@@ -598,6 +605,9 @@ async def startup_event():
 async def shutdown_event():
     """Cerrar conexiones a bases de datos"""
     if V2_AVAILABLE and db_manager:
+        # Detener servicio de monitoreo
+        monitoring_service.stop_monitoring()
+        
         if db_manager.mongodb_client:
             db_manager.mongodb_client.close()
         if db_manager.postgres_pool:
@@ -610,8 +620,15 @@ async def shutdown_event():
 if V2_AVAILABLE:  # Solo registrar endpoints V2 si los módulos están disponibles
     @app.post("/v2/process", response_model=ProcessResponseV2)
     async def process_file_v2(file: UploadFile = File(...)):
-        """Procesar archivo usando arquitectura multi-DB"""
+        """Procesar archivo usando arquitectura multi-DB (un archivo a la vez)"""
         try:
+            # Verificar si ya hay un archivo procesándose
+            if worker_service.current_processing_job:
+                raise HTTPException(
+                    status_code=409, 
+                    detail=f"Ya hay un archivo procesándose: {worker_service.current_processing_job}. Solo se puede procesar un archivo a la vez."
+                )
+            
             # Leer contenido del archivo
             content = await file.read()
             file_content = content.decode('utf-8')
@@ -689,38 +706,41 @@ if V2_AVAILABLE:  # Solo registrar endpoints V2 si los módulos están disponibl
 
     @app.get("/v2/results/{job_id}/stream")
     async def stream_results_v2(job_id: str):
-        """Stream de resultados en tiempo real"""
+        """Stream de resultados en tiempo real usando Redis Pub/Sub"""
         async def generate():
             try:
-                # Obtener chunks procesados
-                chunks = await db_manager.mongodb_client.logsanomaly.chunks.find({
-                    "file_id": job_id,
-                    "processed": True
-                }).to_list(length=None)
+                # Suscribirse al canal de Redis para este job
+                pubsub = db_manager.redis_client.pubsub()
+                await pubsub.subscribe(f"stream:job:{job_id}")
                 
-                total_chunks = await db_manager.mongodb_client.logsanomaly.chunks.count_documents({
-                    "file_id": job_id
-                })
+                logger.info(f"Iniciando stream para job {job_id}")
                 
-                for i, chunk in enumerate(chunks):
-                    # Obtener resultados del chunk
-                    result = await db_manager.mongodb_client.logsanomaly.results.find_one({
-                        "chunk_id": str(chunk["_id"])
-                    })
-                    
-                    if result:
-                        stream_result = StreamResult(
-                            chunk_number=chunk["chunk_number"],
-                            anomalies=result["anomalies"],
-                            progress=(i + 1) / total_chunks,
-                            is_complete=(i + 1) == total_chunks
-                        )
-                        
-                        yield f"data: {stream_result.json()}\n\n"
-                        await asyncio.sleep(0.1)  # Pequeña pausa para streaming
-                        
+                # Enviar evento inicial
+                yield f"data: {{'type': 'stream_started', 'job_id': '{job_id}'}}\n\n"
+                
+                # Escuchar eventos del stream
+                async for message in pubsub.listen():
+                    if message['type'] == 'message':
+                        try:
+                            data = json.loads(message['data'])
+                            yield f"data: {json.dumps(data)}\n\n"
+                            
+                            # Si el job está completado, terminar el stream
+                            if data.get('type') == 'job_completed':
+                                logger.info(f"Job {job_id} completado, terminando stream")
+                                break
+                                
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Error decodificando mensaje: {e}")
+                            continue
+                
+                # Desuscribirse
+                await pubsub.unsubscribe(f"stream:job:{job_id}")
+                await pubsub.close()
+                
             except Exception as e:
-                yield f"data: {{'error': '{str(e)}'}}\n\n"
+                logger.error(f"Error en stream: {e}")
+                yield f"data: {{'type': 'error', 'message': '{str(e)}'}}\n\n"
         
         return StreamingResponse(generate(), media_type="text/plain")
 
@@ -802,6 +822,58 @@ if V2_AVAILABLE:  # Solo registrar endpoints V2 si los módulos están disponibl
             
         except Exception as e:
             logger.error(f"Error obteniendo reportes desde BD: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # === ENDPOINTS DE MONITOREO ===
+    
+    @app.get("/v2/monitoring/status")
+    async def get_system_status():
+        """Obtener estado actual del sistema"""
+        try:
+            summary = monitoring_service.get_system_summary()
+            return summary
+        except Exception as e:
+            logger.error(f"Error obteniendo estado del sistema: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.get("/v2/monitoring/history")
+    async def get_memory_history(limit: int = 100):
+        """Obtener historial de memoria"""
+        try:
+            history = monitoring_service.get_memory_history(limit)
+            return {"history": history}
+        except Exception as e:
+            logger.error(f"Error obteniendo historial de memoria: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.get("/v2/monitoring/alerts")
+    async def get_system_alerts(limit: int = 50):
+        """Obtener alertas del sistema"""
+        try:
+            alerts = monitoring_service.get_recent_alerts(limit)
+            return {"alerts": alerts}
+        except Exception as e:
+            logger.error(f"Error obteniendo alertas: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.get("/v2/monitoring/dashboard")
+    async def get_monitoring_dashboard():
+        """Obtener datos completos para dashboard de monitoreo"""
+        try:
+            current_stats = monitoring_service.get_current_stats()
+            history = monitoring_service.get_memory_history(100)
+            alerts = monitoring_service.get_recent_alerts(50)
+            summary = monitoring_service.get_system_summary()
+            
+            return {
+                "current_stats": current_stats.__dict__ if current_stats else None,
+                "history": history,
+                "alerts": alerts,
+                "summary": summary,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error obteniendo dashboard de monitoreo: {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

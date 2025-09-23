@@ -88,7 +88,7 @@ services:
       - "8000:8000"
     environment:
       - OLLAMA_SERVICE_URL=http://ollama-service:11434
-      - MODEL_NAME=nidum-gemma-2b-uncensored-gguf
+      - MODEL_NAME=qwen2.5:3b
       - PYTHONUNBUFFERED=1
       - MONGODB_URI=mongodb://admin:password@mongodb:27017/logsanomaly?authSource=admin
       - POSTGRES_DSN=postgresql://anomaly_user:anomaly_password@postgres:5432/logsanomaly
@@ -132,7 +132,7 @@ services:
     environment:
       - OLLAMA_HOST=0.0.0.0
       - OLLAMA_DEVICE=nvidia
-      - OLLAMA_MODEL=nidum-gemma-2b-uncensored-gguf
+      - OLLAMA_MODEL=qwen2.5:3b
     networks:
       logs_analyze_net:
         aliases:

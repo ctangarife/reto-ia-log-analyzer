@@ -71,6 +71,11 @@ async function startStatusPolling(jobId: string) {
           clearInterval(statusInterval.value)
           statusInterval.value = null
         }
+        
+        // Recargar reportes cuando se complete el job
+        if (status.status === 'completed') {
+          await analysisStore.loadReportsFromDirectory()
+        }
       }
     } catch (error) {
       console.error('Error obteniendo estado:', error)
