@@ -236,7 +236,7 @@ async def get_llm_explanation(log_entry: str) -> str:
         }
         
         response = requests.post(
-            f"{OLLAMA_SERVICE_URL}/api/generate",
+            f"{OLLAMA_SERVICE_URL}/generate",
             json=payload,
             timeout=30
         )
@@ -547,6 +547,262 @@ async def detect_anomalies_from_text(logs: List[LogEntry]):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error procesando logs: {str(e)}")
+
+# === IMPORTS ADICIONALES PARA V2 ===
+import uuid
+import sys
+import os
+
+# Agregar el directorio actual al path para importaciones
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
+try:
+    from config.database import db_manager
+    from models.v2_models import (
+        ProcessResponseV2, StatusResponseV2, StreamResult,
+        ProcessingStatus
+    )
+    from services.chunk_service import chunk_service
+    from services.worker_service import worker_service
+    V2_AVAILABLE = True
+    logger.info("✅ Módulos V2 cargados correctamente")
+except ImportError as e:
+    logger.error(f"❌ Error importando módulos V2: {e}")
+    logger.error("Los endpoints V2 no estarán disponibles")
+    V2_AVAILABLE = False
+    # Definir variables vacías para evitar errores
+    db_manager = None
+    ProcessResponseV2 = None
+    StatusResponseV2 = None
+    StreamResult = None
+    ProcessingStatus = None
+    chunk_service = None
+    worker_service = None
+
+# === INICIALIZACIÓN DE BASES DE DATOS ===
+@app.on_event("startup")
+async def startup_event():
+    """Inicializar conexiones a bases de datos"""
+    if V2_AVAILABLE:
+        try:
+            await db_manager.connect_all()
+            logger.info("✅ Todas las bases de datos conectadas")
+        except Exception as e:
+            logger.error(f"❌ Error conectando bases de datos: {e}")
+    else:
+        logger.warning("⚠️ Módulos V2 no disponibles - solo endpoints V1 funcionarán")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cerrar conexiones a bases de datos"""
+    if V2_AVAILABLE and db_manager:
+        if db_manager.mongodb_client:
+            db_manager.mongodb_client.close()
+        if db_manager.postgres_pool:
+            await db_manager.postgres_pool.close()
+        if db_manager.redis_client:
+            await db_manager.redis_client.close()
+
+# === ENDPOINTS V2 ===
+
+if V2_AVAILABLE:  # Solo registrar endpoints V2 si los módulos están disponibles
+    @app.post("/v2/process", response_model=ProcessResponseV2)
+    async def process_file_v2(file: UploadFile = File(...)):
+        """Procesar archivo usando arquitectura multi-DB"""
+        try:
+            # Leer contenido del archivo
+            content = await file.read()
+            file_content = content.decode('utf-8')
+            
+            # Crear chunks y job
+            file_id = await chunk_service.create_chunks_from_file(file_content, file.filename)
+            logger.info(f"✅ Chunks creados para archivo {file.filename}, file_id: {file_id}")
+            
+            # Iniciar procesamiento asíncrono
+            logger.info(f"🚀 Iniciando procesamiento asíncrono para {file_id}")
+            task = asyncio.create_task(worker_service.process_file_async(file_id))
+            logger.info(f"📋 Tarea de procesamiento creada: {task}")
+            
+            # Actualizar estado a processing
+            async with db_manager.postgres_pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE processing_jobs 
+                    SET status = $1, started_at = $2 
+                    WHERE id = $3
+                """, ProcessingStatus.PROCESSING, datetime.utcnow(), file_id)
+            logger.info(f"📊 Estado actualizado a processing para {file_id}")
+            
+            return ProcessResponseV2(
+                job_id=file_id,
+                status=ProcessingStatus.PROCESSING,
+                message="Procesamiento iniciado",
+                total_chunks=len(file_content.split('\n')) // 1000  # Estimación
+            )
+            
+        except Exception as e:
+            logger.error(f"Error procesando archivo: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/v2/status/{job_id}", response_model=StatusResponseV2)
+    async def get_status_v2(job_id: str):
+        """Obtener estado de procesamiento"""
+        try:
+            async with db_manager.postgres_pool.acquire() as conn:
+                job = await conn.fetchrow("""
+                    SELECT * FROM processing_jobs WHERE id = $1
+                """, job_id)
+                
+                if not job:
+                    raise HTTPException(status_code=404, detail="Job no encontrado")
+                
+                # Contar chunks procesados
+                chunks_processed = await db_manager.mongodb_client.logsanomaly.chunks.count_documents({
+                    "file_id": job_id,
+                    "processed": True
+                })
+                
+                # Contar anomalías encontradas
+                anomalies_found = await db_manager.mongodb_client.logsanomaly.results.aggregate([
+                    {"$match": {"chunk_id": {"$regex": f"^{job_id}"}}},
+                    {"$unwind": "$anomalies"},
+                    {"$count": "total"}
+                ]).to_list(length=1)
+                
+                anomalies_count = anomalies_found[0]["total"] if anomalies_found else 0
+                
+                progress = chunks_processed / job["total_chunks"] if job["total_chunks"] > 0 else 0
+                
+                return StatusResponseV2(
+                    job_id=job_id,
+                    status=ProcessingStatus(job["status"]),
+                    progress=progress,
+                    chunks_processed=chunks_processed,
+                    total_chunks=job["total_chunks"],
+                    anomalies_found=anomalies_count
+                )
+                
+        except Exception as e:
+            logger.error(f"Error obteniendo estado: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/v2/results/{job_id}/stream")
+    async def stream_results_v2(job_id: str):
+        """Stream de resultados en tiempo real"""
+        async def generate():
+            try:
+                # Obtener chunks procesados
+                chunks = await db_manager.mongodb_client.logsanomaly.chunks.find({
+                    "file_id": job_id,
+                    "processed": True
+                }).to_list(length=None)
+                
+                total_chunks = await db_manager.mongodb_client.logsanomaly.chunks.count_documents({
+                    "file_id": job_id
+                })
+                
+                for i, chunk in enumerate(chunks):
+                    # Obtener resultados del chunk
+                    result = await db_manager.mongodb_client.logsanomaly.results.find_one({
+                        "chunk_id": str(chunk["_id"])
+                    })
+                    
+                    if result:
+                        stream_result = StreamResult(
+                            chunk_number=chunk["chunk_number"],
+                            anomalies=result["anomalies"],
+                            progress=(i + 1) / total_chunks,
+                            is_complete=(i + 1) == total_chunks
+                        )
+                        
+                        yield f"data: {stream_result.json()}\n\n"
+                        await asyncio.sleep(0.1)  # Pequeña pausa para streaming
+                        
+            except Exception as e:
+                yield f"data: {{'error': '{str(e)}'}}\n\n"
+        
+        return StreamingResponse(generate(), media_type="text/plain")
+
+    @app.post("/v2/cancel/{job_id}")
+    async def cancel_job_v2(job_id: str):
+        """Cancelar procesamiento"""
+        try:
+            async with db_manager.postgres_pool.acquire() as conn:
+                await conn.execute("""
+                    UPDATE processing_jobs 
+                    SET status = $1, completed_at = $2 
+                    WHERE id = $3
+                """, ProcessingStatus.CANCELLED, datetime.utcnow(), job_id)
+            
+            return {"message": "Procesamiento cancelado", "job_id": job_id}
+            
+        except Exception as e:
+            logger.error(f"Error cancelando job: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/v2/reports")
+    async def get_reports_from_db():
+        """Obtener todos los reportes desde la base de datos"""
+        try:
+            # Obtener todos los jobs completados
+            async with db_manager.postgres_pool.acquire() as conn:
+                jobs = await conn.fetch("""
+                    SELECT * FROM processing_jobs 
+                    WHERE status = 'completed' 
+                    ORDER BY completed_at DESC
+                """)
+            
+            reports = []
+            
+            for job in jobs:
+                job_id = job["id"]
+                
+                # Obtener chunks del job (convertir UUID a string para MongoDB)
+                chunks = await db_manager.mongodb_client.logsanomaly.chunks.find({
+                    "file_id": str(job_id)
+                }).to_list(length=None)
+                
+                # Obtener resultados de anomalías usando los chunk_ids
+                chunk_ids = [str(chunk["_id"]) for chunk in chunks]
+                results = await db_manager.mongodb_client.logsanomaly.results.find({
+                    "chunk_id": {"$in": chunk_ids}
+                }).to_list(length=None)
+                
+                # Agregar anomalías de todos los chunks
+                all_anomalies = []
+                for result in results:
+                    if "anomalies" in result:
+                        all_anomalies.extend(result["anomalies"])
+                
+                # Calcular estadísticas
+                total_logs = sum(len(chunk["data"].split('\n')) for chunk in chunks)
+                anomalies_detected = len(all_anomalies)
+                chunks_processed = len([chunk for chunk in chunks if chunk.get("processed", False)])
+                
+                # Crear reporte
+                report = {
+                    "id": str(job_id),
+                    "timestamp": job["completed_at"].isoformat() if job["completed_at"] else job["started_at"].isoformat(),
+                    "fileName": job["filename"],
+                    "total_logs": total_logs,
+                    "anomalies_detected": anomalies_detected,
+                    "anomalies": all_anomalies,
+                    "report_file": f"db_report_{job_id}.json",
+                    "file_id": str(job_id),
+                    "status": job["status"],
+                    "total_chunks": job["total_chunks"],
+                    "chunks_processed": chunks_processed
+                }
+                
+                reports.append(report)
+            
+            logger.info(f"Retornando {len(reports)} reportes desde la base de datos")
+            return reports
+            
+        except Exception as e:
+            logger.error(f"Error obteniendo reportes desde BD: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

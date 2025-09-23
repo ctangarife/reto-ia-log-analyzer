@@ -1,455 +1,345 @@
 <template>
-  <div class="app">
-    <header class="header">
-      <h1>Detector de Anomalías en Logs</h1>
-      <p class="subtitle">Sube un archivo de logs para detectar anomalías usando IA</p>
-    </header>
+  <div class="app-container">
+    <aside class="side-panel">
+      <div class="upload-section">
+        <FileUpload
+          :maxFileSize="30000000"
+          :multiple="false"
+          accept=".txt,.log,.json"
+          :auto="true"
+          @select="onFileSelect"
+          @upload="onFileUpload"
+          :customUpload="true"
+          uploadLabel="Analizar"
+          chooseLabel="Seleccionar archivo"
+          cancelLabel="Cancelar"
+        >
+          <template #empty>
+            <p>Arrastra y suelta un archivo aquí o haz clic para seleccionar</p>
+          </template>
+        </FileUpload>
+      </div>
 
-    <main class="main">
-      <div class="content-layout">
-        <!-- Panel izquierdo: Historial -->
-        <aside class="history-panel">
-          <AnalysisHistory />
-        </aside>
-
-        <!-- Panel derecho: Carga y resultados -->
-        <div class="main-panel">
-          <div class="upload-container">
-            <FileUpload
-              mode="advanced"
-              :multiple="false"
-              accept=".txt,.json,.log"
-              :maxFileSize="100000000"
-              @select="onFileSelect"
-              :auto="true"
-              chooseLabel="Seleccionar archivo"
-              uploadLabel="Analizar"
-              cancelLabel="Cancelar"
-              :showUploadButton="false"
-              :showCancelButton="false"
-              :customUpload="true"
-            >
-              <template #empty>
-                <div class="upload-placeholder">
-                  <i class="pi pi-file text-5xl"></i>
-                  <span>Arrastra y suelta tu archivo aquí o haz clic para seleccionar</span>
-                  <small>Máximo 100MB (se procesará en chunks de 500KB) - Formatos: .txt, .json, .log</small>
-                </div>
-              </template>
-            </FileUpload>
+      <div v-if="currentAnalysis" class="analysis-summary">
+        <h3>Resumen del Análisis</h3>
+        <div class="summary-stats">
+          <div class="stat-item">
+            <label>Total de Logs:</label>
+            <span>{{ currentAnalysis.total_logs }}</span>
           </div>
-
-          <div v-if="loading" class="analysis-status">
-            <div class="progress-info">
-              <ProgressSpinner />
-              <p class="progress-text">{{ typeof loading === 'string' ? loading : 'Analizando logs con IA...' }}</p>
-              <div v-if="chunkInfo" class="chunk-info">
-                <p>Procesando chunk {{ chunkInfo.current }} de {{ chunkInfo.total }}</p>
-                <p>Tamaño del chunk: {{ formatBytes(chunkInfo.size) }}</p>
-                <p>Líneas: {{ chunkInfo.startLine }} - {{ chunkInfo.endLine }} de {{ chunkInfo.totalLines }}</p>
-              </div>
-            </div>
+          <div class="stat-item">
+            <label>Anomalías:</label>
+            <span>{{ currentAnalysis.anomalies_detected }}</span>
           </div>
-
-          <div v-if="currentAnalysis" class="analysis-results">
-            <div class="results-header">
-              <h2>Resultados del Análisis</h2>
-              <div class="results-meta">
-                <span class="total-logs">Total logs: {{ currentAnalysis.total_logs }}</span>
-                <span class="anomalies">Anomalías: {{ currentAnalysis.anomalies.length }}</span>
-                <span class="percentage">{{ ((currentAnalysis.anomalies.length / currentAnalysis.total_logs) * 100).toFixed(1) }}%</span>
-              </div>
-            </div>
-
-            <div class="anomalies-list">
-              <TransitionGroup name="list">
-                <div v-for="anomaly in currentAnalysis.anomalies" :key="anomaly.log_entry" class="anomaly-card">
-                  <div class="anomaly-header">
-                    <span :class="getScoreClass(anomaly.anomaly_score)" class="score-badge">
-                      {{ (anomaly.anomaly_score).toFixed(3) }}
-                    </span>
-                  </div>
-                  <div class="anomaly-content">
-                    <pre class="log-entry">{{ anomaly.log_entry }}</pre>
-                    <p class="explanation">{{ anomaly.explanation }}</p>
-                  </div>
-                </div>
-              </TransitionGroup>
-            </div>
-          </div>
-
-          <div v-if="!loading && !currentAnalysis" class="empty-results">
-            <i class="pi pi-folder-open" style="font-size: 3rem; color: #ccc;"></i>
-            <p>Selecciona un análisis del historial o sube un nuevo archivo para comenzar</p>
-          </div>
-
-          <div v-if="error" class="error-message">
-            <Message severity="error" :closable="false">{{ error }}</Message>
+          <div class="stat-item">
+            <label>Porcentaje:</label>
+            <span>{{ ((currentAnalysis.anomalies_detected / currentAnalysis.total_logs) * 100).toFixed(1) }}%</span>
           </div>
         </div>
+      </div>
+
+      <div class="filters-section" v-if="currentAnalysis && currentAnalysis.anomalies.length > 0">
+        <h3>Filtros</h3>
+        <div class="filter-group">
+          <label>Nivel de Anomalía:</label>
+          <InputNumber v-model="scoreFilter" :min="0" :max="1" :step="0.1" />
+          <small>{{ scoreFilter.toFixed(1) }}</small>
+        </div>
+      </div>
+
+      <AnalysisHistory />
+    </aside>
+
+    <main class="main-content">
+      <!-- Componente de procesamiento V2 -->
+      <ProcessingV2 v-if="useV2Processing && store.currentJob" />
+      
+      <div v-else-if="loading" class="progress-overlay">
+        <ProgressSpinner />
+        <div class="progress-info">
+          <p>{{ typeof loading === 'string' ? loading : 'Analizando logs...' }}</p>
+          <div v-if="chunkInfo" class="chunk-details">
+            <small>Chunk {{ chunkInfo.current }}/{{ chunkInfo.total }}</small>
+            <div class="progress-bar">
+              <div 
+                class="progress-fill" 
+                :style="{ width: ((chunkInfo.current / chunkInfo.total) * 100) + '%' }"
+              ></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-else-if="currentAnalysis" class="anomalies-container">
+        <div class="analysis-header">
+          <h2>Resultados del Análisis</h2>
+          <div class="analysis-stats">
+            <div class="stat">
+              <label>Total Logs</label>
+              <span>{{ currentAnalysis.total_logs }}</span>
+            </div>
+            <div class="stat">
+              <label>Anomalías</label>
+              <span>{{ currentAnalysis.anomalies_detected }}</span>
+            </div>
+            <div class="stat">
+              <label>Porcentaje</label>
+              <span>{{ ((currentAnalysis.anomalies_detected / currentAnalysis.total_logs) * 100).toFixed(1) }}%</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="anomalies-list">
+          <div class="no-details-message">
+            <h3>Anomalías Detectadas</h3>
+            <p>Se detectaron {{ currentAnalysis.anomalies_detected }} anomalías de {{ currentAnalysis.total_logs }} logs totales.</p>
+            <p>Porcentaje de anomalías: {{ ((currentAnalysis.anomalies_detected / currentAnalysis.total_logs) * 100).toFixed(1) }}%</p>
+            <p v-if="currentAnalysis.total_chunks">Chunks procesados: {{ currentAnalysis.chunks_processed }}/{{ currentAnalysis.total_chunks }}</p>
+            <p>Estado: {{ currentAnalysis.status || 'completed' }}</p>
+            <p>Archivo: {{ currentAnalysis.fileName }}</p>
+            <p>Análisis realizado el: {{ new Date(currentAnalysis.timestamp).toLocaleString() }}</p>
+          </div>
+          
+          <div v-if="currentAnalysis.anomalies && currentAnalysis.anomalies.length > 0">
+            <h4>Detalles de Anomalías ({{ currentAnalysis.anomalies.length }} encontradas):</h4>
+            <div
+              v-for="(anomaly, index) in currentAnalysis.anomalies"
+              :key="index"
+              class="anomaly-card"
+            >
+              <div class="anomaly-header">
+                <span :class="getScoreClass(anomaly.score || anomaly.anomaly_score)" class="score-badge">
+                  {{ (anomaly.score || anomaly.anomaly_score).toFixed(3) }}
+                </span>
+                <span class="timestamp">{{ formatTimestamp(anomaly.timestamp) }}</span>
+              </div>
+              <div class="anomaly-content">
+                <pre class="log-entry">{{ anomaly.log_entry }}</pre>
+                <p class="explanation">{{ anomaly.explanation }}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div v-else class="empty-state">
+        <i class="pi pi-file-import text-6xl text-gray-300"></i>
+        <p v-if="!currentAnalysis">Selecciona un archivo para comenzar el análisis</p>
+        <p v-else>No se encontraron anomalías en este análisis</p>
       </div>
     </main>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { storeToRefs } from 'pinia'
+import { ref, computed } from 'vue'
 import { useAnalysisStore } from './stores/analysisStore'
+import { formatTimestamp } from './utils/formatters'
 import AnalysisHistory from './components/AnalysisHistory.vue'
-import { splitLogFile, createChunkFile } from './utils/fileChunker'
+import ProcessingV2 from './components/ProcessingV2.vue'
+import FileUpload from 'primevue/fileupload'
+import ProgressSpinner from 'primevue/progressspinner'
+import InputNumber from 'primevue/inputnumber'
 
-interface Results {
-  total_logs: number;
-  anomalies_detected: number;
-  anomalies: any[];
-  report_file: string;
-  chunk_info: any;
-}
-
+const store = useAnalysisStore()
 const loading = ref<boolean | string>(false)
-const error = ref('')
-const chunkInfo = ref<any>(null)
+const scoreFilter = ref(0.5)
+const chunkInfo = ref<{current: number, total: number} | null>(null)
 
-// Store para el historial de análisis
-const analysisStore = useAnalysisStore()
-const { currentAnalysis } = storeToRefs(analysisStore)
+// Variable para controlar qué versión usar
+const useV2Processing = ref(true) // Cambiar a true para usar V2
 
-// Variables reactivas para acumular resultados
-const accumulator = ref({
-  allResults: [] as any[],
-  totalLogs: 0,
-  totalAnomalies: 0,
-  fileName: ''
+const currentAnalysis = computed(() => store.currentAnalysis)
+
+const filteredAnomalies = computed(() => {
+  if (!currentAnalysis.value || !currentAnalysis.value.anomalies) return []
+  return currentAnalysis.value.anomalies.filter(
+    anomaly => (anomaly.score || anomaly.anomaly_score) >= scoreFilter.value
+  ).sort((a, b) => (b.score || b.anomaly_score) - (a.score || a.anomaly_score))
 })
 
-const formatBytes = (bytes: number): string => {
-  if (bytes === 0) return '0 Bytes'
-  const k = 1024
-  const sizes = ['Bytes', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+function getScoreClass(score: number): string {
+  if (score >= 0.8) return 'score-high'
+  if (score >= 0.5) return 'score-medium'
+  return 'score-low'
 }
 
-const getScoreClass = (score) => {
-  if (score < -0.3) return 'high-risk'
-  if (score < -0.2) return 'medium-risk'
-  return 'low-risk'
-}
+async function onFileSelect(event: any) {
+  const file = event.files[0]
+  if (!file) return
 
-const onFileSelect = async (event) => {
+  if (useV2Processing.value) {
+    // Usar procesamiento V2
     try {
-      const file = event.files[0]
-      // Reiniciar estado
-      loading.value = true
-      error.value = ''
-      accumulator.value = {
-        allResults: [],
-        totalLogs: 0,
-        totalAnomalies: 0,
-        fileName: file.name
-      }
-    console.log('Archivo seleccionado:', {
-      name: file.name,
-      size: file.size,
-      type: file.type
-    })
-
-    loading.value = 'Dividiendo archivo en chunks...'
-    const chunks = await splitLogFile(file)
-    console.log('Chunks generados:', chunks.map(chunk => ({
-      startLine: chunk.startLine,
-      endLine: chunk.endLine,
-      totalLines: chunk.totalLines,
-      size: new Blob([chunk.content]).size,
-      contentPreview: chunk.content.slice(0, 100) + '...'
-    })))
-    
-    const allResults = []
-    let totalLogs = 0
-    let totalAnomalies = 0
-    
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i]
-      const chunkFile = createChunkFile(chunk)
-      
-      // Actualizar información del chunk actual
-      chunkInfo.value = {
-        current: i + 1,
-        total: chunks.length,
-        size: new Blob([chunk.content]).size,
-        startLine: chunk.startLine + 1,
-        endLine: chunk.endLine + 1,
-        totalLines: chunk.totalLines
-      }
-      
-      // Actualizar estado de progreso
-      loading.value = `Analizando chunk ${i + 1} de ${chunks.length}...`
-      
-      try {
-        const formData = new FormData()
-        formData.append('file', chunkFile)
-        
-        console.log('Enviando chunk:', {
-          fileName: chunkFile.name,
-          fileSize: chunkFile.size,
-          fileType: chunkFile.type,
-          content: chunkFile.size > 1000 ? 
-            chunkFile.text().then(text => text.substring(0, 100) + '...') : 
-            chunkFile.text()
-        })
-        
-        // Configurar para recibir streaming de datos
-        const response = await fetch('/api/detect', {
-          method: 'POST',
-          body: formData
-        })
-
-        // Crear un reader para procesar el stream
-        const reader = response.body?.getReader()
-        const decoder = new TextDecoder()
-        
-        if (!reader) {
-          throw new Error('No se pudo iniciar el streaming')
-        }
-
-        // Procesar el stream
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          
-          // Decodificar y procesar cada línea
-          const text = decoder.decode(value)
-          const lines = text.split('\n').filter(line => line.trim())
-          
-          for (const line of lines) {
-            try {
-              const partialResult = JSON.parse(line)
-              console.log('Resultado parcial recibido:', partialResult)
-              
-              // Actualizar progreso
-              if (partialResult.processed_percentage) {
-                loading.value = `Procesando anomalías: ${Math.round(partialResult.processed_percentage)}%`
-              }
-              
-              // Actualizar resultados
-              // Asegurarnos de que partialResult tiene la estructura esperada
-              if (partialResult && typeof partialResult === 'object') {
-                // Agregar nuevas anomalías si existen
-                if (Array.isArray(partialResult.anomalies)) {
-                  accumulator.value.allResults.push(...partialResult.anomalies);
-                }
-
-                // Actualizar contadores
-                accumulator.value.totalLogs = partialResult.total_logs || 0;
-                accumulator.value.totalAnomalies = partialResult.anomalies_detected || 0;
-                
-                // Crear o actualizar el análisis en el store
-                const analysisResult = {
-                  id: `${accumulator.value.fileName}_${Date.now()}`,
-                  timestamp: new Date().toISOString(),
-                  fileName: accumulator.value.fileName,
-                  total_logs: accumulator.value.totalLogs,
-                  anomalies_detected: accumulator.value.totalAnomalies,
-                  anomalies: accumulator.value.allResults,
-                  report_file: partialResult.report_file || ''
-                }
-                
-                analysisStore.addAnalysis(analysisResult)
-
-                // Log para debugging
-                console.log('Estado actual:', {
-                  totalLogs: accumulator.value.totalLogs,
-                  totalAnomalies: accumulator.value.totalAnomalies,
-                  anomaliesCount: accumulator.value.allResults.length,
-                  lastResult: partialResult
-                });
-              }
-            } catch (e) {
-              console.warn('Error procesando línea:', e)
-            }
-          }
-        }
-      } catch (err) {
-        error.value = `Error en chunk ${i + 1}/${chunks.length} (líneas ${chunkInfo.value.startLine}-${chunkInfo.value.endLine}): ${err.response?.data?.detail || err.message}`
-        throw err // Detener el procesamiento
-      }
+      loading.value = 'Iniciando procesamiento V2...'
+      const jobId = await store.processFileV2(file)
+      console.log('Job iniciado:', jobId)
+      loading.value = false
+    } catch (error) {
+      console.error('Error durante el procesamiento V2:', error)
+      loading.value = false
     }
-    
-    // Finalizar el análisis actual
-    const finalAnalysis = {
-      id: `${accumulator.value.fileName}_${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      fileName: accumulator.value.fileName,
-      total_logs: accumulator.value.totalLogs,
-      anomalies_detected: accumulator.value.totalAnomalies,
-      anomalies: accumulator.value.allResults.sort((a, b) => b.anomaly_score - a.anomaly_score),
-      report_file: accumulator.value.reportFile || ''
+  } else {
+    // Usar procesamiento V1 (original)
+    loading.value = 'Preparando archivo...'
+    const formData = new FormData()
+    formData.append('file', file)
+
+    try {
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        body: formData
+      })
+
+      if (!response.ok) {
+        throw new Error(`Error HTTP: ${response.status}`)
+      }
+
+      const result = await response.json()
+      store.addAnalysis(result)
+    } catch (error) {
+      console.error('Error durante el análisis:', error)
+    } finally {
+      loading.value = false
     }
-    
-    // Actualizar el store con el análisis completo
-    analysisStore.addAnalysis(finalAnalysis)
-    
-  } catch (err) {
-    error.value = 'Error al procesar el archivo: ' + (err.response?.data?.detail || err.message)
-  } finally {
-    loading.value = false
   }
+}
+
+function onFileUpload(event: any) {
+  // Handle file upload if needed
 }
 </script>
 
-<style scoped>
-.app {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 2rem;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+<style>
+.app-container {
+  display: flex;
+  height: 100vh;
+  background-color: #f5f5f5;
 }
 
-.content-layout {
-  display: grid;
-  grid-template-columns: 300px 1fr;
-  gap: 2rem;
-  align-items: start;
-  margin-top: 2rem;
-}
-
-.history-panel {
-  position: sticky;
-  top: 2rem;
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-  max-height: calc(100vh - 4rem);
+.side-panel {
+  width: 300px;
+  padding: 1rem;
+  background-color: white;
+  border-right: 1px solid #e0e0e0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
   overflow-y: auto;
 }
 
-.main-panel {
-  min-width: 0;
-  background: white;
+.main-content {
+  flex: 1;
+  padding: 1rem;
+  overflow-y: auto;
+  position: relative;
+}
+
+.upload-section {
+  margin-bottom: 1rem;
+}
+
+.analysis-summary {
+  padding: 1rem;
+  background-color: #f8f9fa;
   border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-  padding: 1.5rem;
 }
 
-.header {
-  text-align: center;
-  margin-bottom: 3rem;
-}
-
-.header h1 {
-  margin: 0;
-  color: #2c3e50;
-}
-
-.subtitle {
-  color: #666;
-  margin-top: 0.5rem;
-}
-
-.upload-container {
-  max-width: 600px;
-  margin: 0 auto 2rem;
-}
-
-.upload-placeholder {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1rem;
-  padding: 2rem;
-  text-align: center;
-  color: #666;
-}
-
-.upload-placeholder small {
-  color: #999;
-}
-
-.analysis-status {
-  text-align: center;
-  margin: 2rem 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1rem;
-}
-
-.progress-info {
+.summary-stats {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
 }
 
-.progress-text {
-  font-size: 1.1rem;
-  color: #2c3e50;
-  margin: 0;
+.stat-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
-.chunk-info {
-  background: #f8f9fa;
+.filters-section {
   padding: 1rem;
-  border-radius: 0.5rem;
-  text-align: left;
-}
-
-.chunk-info p {
-  margin: 0.25rem 0;
-  color: #666;
-  font-family: monospace;
-}
-
-.analysis-results {
-  padding: 2rem;
-  background: white;
+  background-color: #f8f9fa;
   border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
 }
 
-.results-header {
-  margin-bottom: 2rem;
-  padding-bottom: 1rem;
-  border-bottom: 1px solid #e0e0e0;
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
-.results-header h2 {
-  margin: 0 0 1rem 0;
-  color: #2c3e50;
-  font-size: 1.5rem;
+.progress-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(255, 255, 255, 0.9);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
 }
 
-.results-meta {
+.progress-info {
+  text-align: center;
+}
+
+.chunk-details {
+  width: 200px;
+  text-align: center;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 8px;
+  background-color: #e0e0e0;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 0.5rem;
+}
+
+.progress-fill {
+  height: 100%;
+  background-color: #2196f3;
+  transition: width 0.3s ease;
+}
+
+.anomalies-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.analysis-header {
+  background-color: white;
+  padding: 1rem;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.analysis-stats {
   display: flex;
   gap: 2rem;
-  font-size: 1.1rem;
+  margin-top: 1rem;
 }
 
-.total-logs {
-  color: #2196f3;
-}
-
-.anomalies {
-  color: #f44336;
-}
-
-.percentage {
-  color: #4caf50;
-  font-weight: 500;
-}
-
-.empty-results {
+.stat {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 1rem;
-  padding: 4rem;
-  text-align: center;
+}
+
+.stat label {
+  font-size: 0.875rem;
   color: #666;
-  background: white;
-  border-radius: 8px;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+.stat span {
+  font-size: 1.25rem;
+  font-weight: 600;
 }
 
 .anomalies-list {
@@ -459,17 +349,10 @@ const onFileSelect = async (event) => {
 }
 
 .anomaly-card {
-  background: white;
-  border: 1px solid #e0e0e0;
+  background-color: white;
   border-radius: 8px;
   padding: 1rem;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-  transition: all 0.3s ease;
-}
-
-.anomaly-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
 
 .anomaly-header {
@@ -482,157 +365,69 @@ const onFileSelect = async (event) => {
 .score-badge {
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
-  font-family: monospace;
-  font-size: 0.9rem;
+  font-weight: 600;
 }
 
-.high-risk {
-  background: #ffebee;
-  color: #d32f2f;
+.score-high {
+  background-color: #fecaca;
+  color: #dc2626;
 }
 
-.medium-risk {
-  background: #fff3e0;
-  color: #f57c00;
+.score-medium {
+  background-color: #fed7aa;
+  color: #ea580c;
 }
 
-.low-risk {
-  background: #e8f5e9;
-  color: #388e3c;
+.score-low {
+  background-color: #bfdbfe;
+  color: #2563eb;
+}
+
+.timestamp {
+  font-size: 0.875rem;
+  color: #666;
+}
+
+.anomaly-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
 }
 
 .log-entry {
-  background: #f5f5f5;
-  padding: 0.75rem;
+  background-color: #f8f9fa;
+  padding: 0.5rem;
   border-radius: 4px;
-  font-size: 0.9rem;
-  margin: 0.5rem 0;
+  font-family: monospace;
   white-space: pre-wrap;
   word-break: break-all;
 }
 
 .explanation {
-  color: #666;
-  font-size: 0.95rem;
-  margin: 0.5rem 0 0 0;
+  color: #4b5563;
+  font-size: 0.875rem;
 }
 
-/* Animaciones */
-.list-enter-active,
-.list-leave-active {
-  transition: all 0.5s ease;
-}
-
-.list-enter-from,
-.list-leave-to {
-  opacity: 0;
-  transform: translateX(30px);
-}
-
-.list-move {
-  transition: transform 0.5s ease;
-}
-
-.error-message {
-  max-width: 600px;
-  margin: 1rem auto;
-}
-
-.summary-card {
-  max-width: 800px;
-  margin: 0 auto 2rem;
-}
-
-.summary-stats {
+.empty-state {
   display: flex;
-  justify-content: space-around;
-  padding: 1rem 0;
-}
-
-.stat {
-  text-align: center;
-}
-
-.stat-value {
-  font-size: 2rem;
-  font-weight: bold;
-  color: #2c3e50;
-}
-
-.stat-label {
-  color: #666;
-  margin-top: 0.5rem;
-}
-
-.anomalies-section {
-  margin-top: 3rem;
-}
-
-.anomalies-section h2 {
-  text-align: center;
-  color: #2c3e50;
-  margin-bottom: 2rem;
-}
-
-.anomaly-card {
-  margin-bottom: 1.5rem;
-}
-
-.anomaly-header {
-  display: flex;
-  justify-content: space-between;
+  flex-direction: column;
   align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 1rem;
+  color: #6b7280;
 }
 
-.anomaly-index {
-  font-weight: bold;
+.no-details-message {
+  padding: 2rem;
+  text-align: center;
   color: #666;
-}
-
-.anomaly-score {
-  padding: 0.25rem 0.75rem;
-  border-radius: 1rem;
-  font-weight: bold;
-}
-
-.high-risk {
-  background-color: #ffebee;
-  color: #d32f2f;
-}
-
-.medium-risk {
-  background-color: #fff3e0;
-  color: #f57c00;
-}
-
-.low-risk {
-  background-color: #e8f5e9;
-  color: #388e3c;
-}
-
-.log-content {
+  background-color: #f8f9fa;
+  border-radius: 8px;
   margin-top: 1rem;
 }
 
-.log-content h3 {
-  color: #2c3e50;
-  font-size: 1rem;
-  margin: 1rem 0 0.5rem;
-}
-
-.log-content pre {
-  background: #f8f9fa;
-  padding: 1rem;
-  border-radius: 0.5rem;
-  overflow-x: auto;
-  margin: 0;
-  font-family: 'Courier New', Courier, monospace;
-}
-
-.explanation {
-  color: #2c3e50;
-  line-height: 1.6;
+.no-details-message p {
   margin: 0.5rem 0;
-  font-style: italic;
 }
 </style>

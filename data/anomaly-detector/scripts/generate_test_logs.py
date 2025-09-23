@@ -1,102 +1,130 @@
 import random
 import datetime
-import json
+import json as json_module  # Renombrado para evitar conflicto
 import os
 
-def generate_normal_log():
-    """Genera un log normal"""
-    actions = [
-        "User login successful",
-        "Database connection established",
-        "File uploaded successfully",
-        "Cache updated",
-        "Session created",
-        "Request processed",
-        "Data synchronized",
-        "Backup completed",
-        "Service health check passed",
-        "Configuration loaded"
-    ]
-    return random.choice(actions)
-
-def generate_anomaly_log():
-    """Genera un log anómalo"""
-    anomalies = [
-        "CRITICAL: System memory usage at 98%",
-        "ERROR: Database connection failed after 5 retries",
-        "ALERT: Unauthorized access attempt from IP 192.168.1.100",
-        "FATAL: Disk space critically low (99% used)",
-        "ERROR: Unexpected system shutdown",
-        "WARNING: Unusual CPU spike detected (95% usage)",
-        "CRITICAL: Multiple failed login attempts detected",
-        "ERROR: Data corruption detected in primary storage",
-        "ALERT: Possible SQL injection attempt detected",
-        "FATAL: Main process crashed unexpectedly"
-    ]
-    return random.choice(anomalies)
-
-def generate_timestamp(start_date=None):
-    """Genera un timestamp dentro de un rango"""
-    if not start_date:
-        start_date = datetime.datetime.now() - datetime.timedelta(days=1)
+def generate_test_logs(size_mb: int, anomaly_ratio: float = 0.1, pattern: str = "normal") -> tuple:
+    """
+    Genera logs de prueba con diferentes patrones
     
-    time_offset = datetime.timedelta(
-        seconds=random.randint(0, 24*60*60)
-    )
-    return (start_date + time_offset).strftime("%Y-%m-%d %H:%M:%S")
-
-def generate_log_file(filename, num_logs=100, anomaly_ratio=0.1):
-    """Genera un archivo de logs con una proporción de anomalías"""
+    Args:
+        size_mb: Tamaño aproximado del archivo en MB
+        anomaly_ratio: Ratio de anomalías (0.0 - 1.0)
+        pattern: "normal", "high_volume", "high_anomaly"
+    
+    Returns:
+        tuple: (path_to_txt, path_to_json)
+    """
+    
+    # Templates de logs
+    normal_templates = [
+        "INFO [{}] User {} logged in successfully from IP {}",
+        "DEBUG [{}] Request processed in {}ms for endpoint {}",
+        "INFO [{}] Database query completed in {}ms",
+        "INFO [{}] Cache hit ratio: {}%",
+        "DEBUG [{}] Memory usage at {}%"
+    ]
+    
+    error_templates = [
+        "ERROR [{}] Failed login attempt for user {} from IP {} - Invalid credentials",
+        "ERROR [{}] Database connection timeout after {}ms",
+        "CRITICAL [{}] Memory usage critical at {}%",
+        "ERROR [{}] Rate limit exceeded for IP {}",
+        "WARN [{}] Suspicious activity detected from IP {}"
+    ]
+    
+    # Datos para generar logs realistas
+    usernames = ["john.doe", "alice.smith", "bob.jones", "admin", "system"]
+    ips = [f"192.168.1.{i}" for i in range(1, 255)]
+    endpoints = ["/api/users", "/api/auth", "/api/data", "/api/metrics", "/api/logs"]
+    
+    # Ajustar parámetros según el patrón
+    if pattern == "high_volume":
+        normal_templates *= 3  # Más variedad de logs normales
+        anomaly_ratio *= 0.5  # Menos anomalías
+    elif pattern == "high_anomaly":
+        error_templates *= 2   # Más variedad de errores
+        anomaly_ratio *= 2    # Más anomalías
+    
+    # Calcular número aproximado de líneas para alcanzar el tamaño deseado
+    avg_line_size = 100  # tamaño promedio en bytes
+    target_lines = (size_mb * 1024 * 1024) // avg_line_size
+    
     logs = []
-    num_anomalies = int(num_logs * anomaly_ratio)
+    json_logs = []
     
-    # Generar logs normales
-    for _ in range(num_logs - num_anomalies):
-        log = {
-            "timestamp": generate_timestamp(),
-            "content": generate_normal_log(),
-            "level": "INFO"
-        }
-        logs.append(log)
+    for i in range(target_lines):
+        timestamp = datetime.datetime.now() - datetime.timedelta(
+            seconds=random.randint(0, 86400)  # Últimas 24 horas
+        )
+        
+        # Decidir si esta línea será una anomalía
+        is_anomaly = random.random() < anomaly_ratio
+        
+        if is_anomaly:
+            template = random.choice(error_templates)
+            log_data = {
+                "timestamp": timestamp.isoformat(),
+                "level": "ERROR",
+                "user": random.choice(usernames),
+                "ip": random.choice(ips),
+                "latency": random.randint(1000, 5000),
+                "memory": random.randint(85, 100),
+                "is_anomaly": True
+            }
+        else:
+            template = random.choice(normal_templates)
+            log_data = {
+                "timestamp": timestamp.isoformat(),
+                "level": "INFO",
+                "user": random.choice(usernames),
+                "ip": random.choice(ips),
+                "latency": random.randint(10, 200),
+                "memory": random.randint(20, 80),
+                "is_anomaly": False
+            }
+        
+        # Generar log en formato texto
+        log_line = template.format(
+            timestamp.isoformat(),
+            log_data["user"],
+            log_data["ip"],
+            log_data.get("latency", ""),
+            log_data.get("memory", "")
+        )
+        
+        logs.append(log_line)
+        json_logs.append(log_data)
     
-    # Generar logs anómalos
-    for _ in range(num_anomalies):
-        log = {
-            "timestamp": generate_timestamp(),
-            "content": generate_anomaly_log(),
-            "level": "ERROR"
-        }
-        logs.append(log)
-    
-    # Mezclar los logs y ordenar por timestamp
-    random.shuffle(logs)
-    logs.sort(key=lambda x: x["timestamp"])
-    
-    # Guardar en formato JSON y texto plano
-    with open(f"{filename}.json", "w") as f:
-        json.dump(logs, f, indent=2)
-    
-    with open(f"{filename}.txt", "w") as f:
-        for log in logs:
-            f.write(f"{log['timestamp']} {log['level']}: {log['content']}\n")
-
-if __name__ == "__main__":
-    # Crear directorio de test_data si no existe
+    # Crear directorio si no existe
     os.makedirs("test_data", exist_ok=True)
     
-    # Generar diferentes conjuntos de logs
-    scenarios = [
-        ("normal", 100, 0.05),  # 5% anomalías
-        ("high_anomaly", 100, 0.20),  # 20% anomalías
-        ("low_volume", 20, 0.10),  # Pocos logs
-        ("high_volume", 1000, 0.10),  # Muchos logs
+    # Guardar archivos
+    base_name = f"logs_{pattern}_{size_mb}mb"
+    txt_path = f"test_data/{base_name}.txt"
+    json_path = f"test_data/{base_name}.json"
+    
+    # Guardar archivo de texto
+    with open(txt_path, "w") as f:
+        f.write("\n".join(logs))
+    
+    # Guardar archivo JSON
+    with open(json_path, "w") as f:
+        json_module.dump(json_logs, f, indent=2)
+    
+    return txt_path, json_path
+
+if __name__ == "__main__":
+    # Generar diferentes sets de prueba
+    test_sets = [
+        (1, 0.1, "normal"),      # 1MB, 10% anomalías, patrón normal
+        (10, 0.1, "normal"),     # 10MB, 10% anomalías, patrón normal
+        (50, 0.05, "normal"),    # 50MB, 5% anomalías, patrón normal
+        (10, 0.2, "high_anomaly"), # 10MB, 20% anomalías
+        (10, 0.1, "high_volume"),  # 10MB, alta variedad de logs normales
     ]
     
-    for name, num_logs, ratio in scenarios:
-        print(f"Generando {name} con {num_logs} logs ({ratio*100}% anomalías)...")
-        generate_log_file(f"test_data/logs_{name}", num_logs, ratio)
-    
-    print("\nArchivos generados en el directorio test_data/:")
-    for name, _, _ in scenarios:
-        print(f"- logs_{name}.json")
-        print(f"- logs_{name}.txt")
+    for size, ratio, pattern in test_sets:
+        print(f"Generando logs {pattern} de {size}MB...")
+        txt, json_file = generate_test_logs(size, ratio, pattern)
+        print(f"Archivos generados: {txt}, {json_file}")
