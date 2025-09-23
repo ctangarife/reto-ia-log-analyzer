@@ -93,20 +93,24 @@ const expandedGroups = ref<Record<string, boolean>>({})
 function selectAnalysis(analysis: any) {
   // Usar directamente los datos que ya tenemos disponibles
   setCurrentAnalysis(analysis)
-  selectedGroupId.value = analysis.file_id || 'sin_grupo'
+  selectedGroupId.value = analysis.fileName || 'sin_archivo'
 }
 
 // Formatear nombre del grupo para mostrar
 function formatGroupName(groupId: string) {
-  return groupId.replace(/_/g, ' ')
+  if (groupId === 'sin_archivo') {
+    return 'Sin archivo'
+  }
+  // Limpiar el nombre del archivo para mostrar
+  return groupId.replace(/_/g, ' ').replace(/\.txt$/, '').replace(/\.log$/, '')
 }
 
-// Agrupar análisis por carpeta
+// Agrupar análisis por nombre de archivo
 const groupedAnalysis = computed(() => {
   const groups: Record<string, any[]> = {}
   
   analysisHistory.value.forEach(analysis => {
-    const groupId = analysis.file_id || 'sin_grupo'
+    const groupId = analysis.fileName || 'sin_archivo'
     if (!groups[groupId]) {
       groups[groupId] = []
     }
