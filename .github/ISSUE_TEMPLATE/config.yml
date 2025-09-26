@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/usuario/logsanomaly/blob/main/README.md
+    about: Check the main documentation first
+  - name: Quick Installation Guide
+    url: https://github.com/usuario/logsanomaly/blob/main/INSTALACION-RAPIDA.md
+    about: Quick start guide for installation
+  - name: Model Configuration Guide
+    url: https://github.com/usuario/logsanomaly/blob/main/CONFIGURACION-MODELOS.md
+    about: Detailed guide for LLM model configuration
+  - name: Discussions
+    url: https://github.com/usuario/logsanomaly/discussions
+    about: For general questions and community discussions
