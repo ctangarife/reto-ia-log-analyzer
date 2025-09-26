@@ -100,7 +100,7 @@ El sistema está compuesto por los siguientes servicios en contenedores Docker:
 ## Estructura de Directorios
 
 ```
-logsanomaly/
+reto-ia-log-analyzer/
 ├── build/                      # Dockerfiles y configuraciones
 │   ├── anomaly-detector/      # Servicio de detección
 │   │   └── Dockerfile         # Imagen del backend
@@ -269,8 +269,8 @@ Puede probar el sistema con archivos de ejemplo:
 
 ```bash
 # Clonar el repositorio
-git clone https://github.com/usuario/logsanomaly.git
-cd logsanomaly
+git clone https://github.com/ctangarife/reto-ia-log-analyzer.git
+cd reto-ia-log-analyzer
 
 # Levantar los servicios
 docker-compose up -d
@@ -564,8 +564,8 @@ docker run --rm -v logs-analyze-ollama_models:/models -v $(pwd):/backup ubuntu t
 
 ### Contacto y Soporte
 
-- **Repositorio**: [GitHub](https://github.com/usuario/logsanomaly)
-- **Issues**: Para reportar bugs o solicitar características
+- **Repositorio**: [GitHub](https://github.com/ctangarife/reto-ia-log-analyzer)
+- **Issues**: Para reportar bugs o solicitar características en [GitHub Issues](https://github.com/ctangarife/reto-ia-log-analyzer/issues)
 - **Documentación**: Wiki del repositorio para información adicional
 
 ### Contribuir al Proyecto
@@ -632,4 +632,4 @@ Este proyecto está licenciado bajo la Licencia MIT. Consulte el archivo [LICENS
 
 ---
 
-**📝 Nota**: Este README se actualiza regularmente. Para la información más reciente, consulte la [documentación completa](https://github.com/usuario/logsanomaly/wiki) o los [issues del proyecto](https://github.com/usuario/logsanomaly/issues).
+**📝 Nota**: Este README se actualiza regularmente. Para la información más reciente, consulte la [documentación completa](https://github.com/ctangarife/reto-ia-log-analyzer/wiki) o los [issues del proyecto](https://github.com/ctangarife/reto-ia-log-analyzer/issues).

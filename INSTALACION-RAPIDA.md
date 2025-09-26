@@ -14,8 +14,8 @@ docker-compose --version
 ### Paso 2: Clonar y Ejecutar
 ```bash
 # Clonar repositorio
-git clone https://github.com/usuario/logsanomaly.git
-cd logsanomaly
+git clone https://github.com/ctangarife/reto-ia-log-analyzer.git
+cd reto-ia-log-analyzer
 
 # Iniciar todos los servicios
 docker-compose up -d
@@ -90,7 +90,7 @@ environment:
 
 - **Documentación completa**: [README.md](./README.md)
 - **Configuración de modelos**: [CONFIGURACION-MODELOS.md](./CONFIGURACION-MODELOS.md)
-- **Issues**: https://github.com/usuario/logsanomaly/issues
+- **Issues**: https://github.com/ctangarife/reto-ia-log-analyzer/issues
 
 ---
 ⭐ Si te gusta el proyecto, ¡dale una estrella en GitHub!
