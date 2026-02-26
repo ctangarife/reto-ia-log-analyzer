@@ -1,18 +1,27 @@
-version: '3.8'
+# ============================================================================
+# Logs Anomaly Detector - Sistema de Detección de Anomalías en Logs con IA
+# ============================================================================
+# Basado en arquitectura de securitygestion
+# https://github.com/ctangarife/securitygestion
+#
+# ANTES DE INICIAR:
+# 1. Copiar env.template a .env: cp env.template .env
+# 2. Ajustar variables en .env según tu entorno
+# 3. Ejecutar: docker-compose up -d
 
 services:
-  # Servicio de MongoDB
+  # ==========================================================================
+  # MONGODB - Base de Datos de Logs y Reportes
+  # ==========================================================================
   mongodb:
     image: mongo:7.0
     container_name: logs-analyze-mongodb
     restart: unless-stopped
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=admin
-      - MONGO_INITDB_ROOT_PASSWORD=password
-      - MONGO_INITDB_DATABASE=logsanomaly
+    env_file:
+      - .env
     volumes:
       - mongodb_data:/data/db
-      - ./build/mongodb/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+      - ./db/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
     ports:
       - "27017:27017"
     networks:
@@ -26,19 +35,18 @@ services:
       retries: 5
       start_period: 40s
 
-  # Servicio de PostgreSQL
+  # ==========================================================================
+  # POSTGRESQL - Base de Datos de Configuración
+  # ==========================================================================
   postgres:
     image: postgres:15-alpine
     container_name: logs-analyze-postgres
     restart: unless-stopped
-    environment:
-      - POSTGRES_DB=logsanomaly
-      - POSTGRES_USER=anomaly_user
-      - POSTGRES_PASSWORD=anomaly_password
-      - POSTGRES_INITDB_ARGS=--encoding=UTF-8
+    env_file:
+      - .env
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./data/anomaly-detector/database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
       - "5432:5432"
     networks:
@@ -46,13 +54,15 @@ services:
         aliases:
           - postgres
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U anomaly_user -d logsanomaly"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-anomaly_user} -d ${POSTGRES_DB:-logsanomaly}"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 30s
 
-  # Servicio de Redis
+  # ==========================================================================
+  # REDIS - Cache y Colas de Procesamiento
+  # ==========================================================================
   redis:
     image: redis:7.2-alpine
     container_name: logs-analyze-redis
@@ -74,6 +84,38 @@ services:
       retries: 5
       start_period: 20s
 
+  # ==========================================================================
+  # QDRANT - Base de Datos Vectorial para Búsqueda de Similitud
+  # ==========================================================================
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: logs-analyze-qdrant
+    ports:
+      - "6333:6333"  # API REST
+      - "6334:6334"  # gRPC
+    volumes:
+      # Volumen nombrado para evitar problemas de corrupción en Windows
+      - qdrant_storage:/qdrant/storage
+    environment:
+      # Configuración de optimización de almacenamiento
+      QDRANT__STORAGE__OPTIMIZER__INDEXING_THRESHOLD: 10000
+      QDRANT__STORAGE__OPTIMIZER__FLUSH_INTERVAL_SEC: 5
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      logs_analyze_net:
+        aliases:
+          - qdrant
+          - vector-db
+
+  # ==========================================================================
+  # BACKEND PYTHON - FastAPI, Detección de Anomalías, IA
+  # ==========================================================================
   anomaly-detector:
     build:
       context: ./
@@ -81,20 +123,18 @@ services:
     container_name: logs-analyze-detector
     restart: unless-stopped
     volumes:
-      - ./data/anomaly-detector:/app
-      - ./data/anomaly-detector/reports:/app/reports
-      - ./data/anomaly-detector/chunks:/app/chunks
+      - ./data/backend-python:/app
+      - ./data/backend-python/reports:/app/reports
+      - ./data/backend-python/chunks:/app/chunks
     ports:
       - "8000:8000"
-    environment:
-      - OLLAMA_SERVICE_URL=http://ollama-service:11434
-      - MODEL_NAME=qwen2.5:3b
-      - PYTHONUNBUFFERED=1
-      - MONGODB_URI=mongodb://admin:password@mongodb:27017/logsanomaly?authSource=admin
-      - POSTGRES_DSN=postgresql://anomaly_user:anomaly_password@postgres:5432/logsanomaly
-      - REDIS_URL=redis://redis:6379/0
+    env_file:
+      - .env
     command: >
-      sh -c "pip install -r requirements.txt &&
+      sh -c "cd /app &&
+             pip install --upgrade pip &&
+             pip install -r requirements.txt &&
+             echo '✅ Dependencias instaladas correctamente' &&
              uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
     networks:
       logs_analyze_net:
@@ -107,53 +147,61 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      ollama-service:
+      qdrant:
         condition: service_healthy
+      #ollama-service:
+      #  condition: service_healthy
 
-  ollama-service:
-    container_name: logs-analyze-ollama
-    restart: unless-stopped
-    build:
-      context: ./
-      dockerfile: ./build/ollama/Dockerfile
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [ gpu ]
-        limits:
-          memory: 16G
-    volumes:
-      - ./data/models/ollama:/root/.ollama
-    ports:
-      - "11434:11434"
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_DEVICE=nvidia
-      - OLLAMA_MODEL=qwen2.5:3b
-    networks:
-      logs_analyze_net:
-        aliases:
-          - ollama-service
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:11434/api/tags" ]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 90s
+  # ==========================================================================
+  # OLLAMA - Servicio de IA Local con LLMs
+  # ==========================================================================
+  #ollama-service:
+  #  container_name: logs-analyze-ollama
+  #  restart: unless-stopped
+  #  build:
+  #    context: ./
+  #    dockerfile: ./build/ollama/Dockerfile
+  #  deploy:
+  #    resources:
+  #      reservations:
+  #        devices:
+  #          - driver: nvidia
+  #            count: all
+  #            capabilities: [ gpu ]
+  #        limits:
+  #          memory: 16G
+  #  volumes:
+  #    - ./data/models/ollama:/root/.ollama
+  #  ports:
+  #    - "11434:11434"
+  #  env_file:
+  #    - .env
+  #  networks:
+  #    logs_analyze_net:
+  #      aliases:
+  #        - ollama-service
+  #  healthcheck:
+  #    test: [ "CMD", "curl", "-f", "http://localhost:11434/api/tags" ]
+  #    interval: 30s
+  #    timeout: 10s
+  #    retries: 5
+  #    start_period: 90s
 
+  # ==========================================================================
+  # FRONTEND - Vue 3 Build Container
+  # ==========================================================================
+  # Este contenedor compila Vue 3 a estáticos en ./data/static/
+  # Nginx sirve estos archivos compilados
   logs-analyze-ui:
     build:
       context: ./
       dockerfile: ./build/ui/Dockerfile
     container_name: logs-analyze-ui
     volumes:
-      - ./data/ui:/app
+      - ./data/frontend:/app
       - ./data/static:/app/dist
-    environment:
-      - NODE_ENV=development
+    env_file:
+      - .env
     command: sh -c "cd /app && npm install && npm run build && cp -r dist/* /app/dist/"
     depends_on:
       - anomaly-detector
@@ -163,14 +211,24 @@ services:
           - logs-analyze-ui
     restart: "no"
 
+  # ==========================================================================
+  # NGINX - Reverse Proxy y Gateway Principal
+  # ==========================================================================
   logs-analyze-nginx:
     image: nginx:stable-alpine
     container_name: logs-analyze-nginx
     ports:
       - "80:80"
+      - "8080:8080"  # Health check interno
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Montar configuraciones de nginx
+      - ./server/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./server/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./server/nginx/includes:/etc/nginx/includes:ro
+      # Archivos estáticos del frontend (build de Vue)
       - ./data/static:/usr/share/nginx/html:ro
+      # Logs
+      - ./data/logs/nginx:/var/log/nginx
     depends_on:
       logs-analyze-ui:
         condition: service_completed_successfully
@@ -181,13 +239,24 @@ services:
         aliases:
           - logs-analyze-nginx
     restart: unless-stopped
-    command: ["nginx", "-g", "daemon off;"]
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/nginx-health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
 
+# ============================================================================
+# REDES
+# ============================================================================
 networks:
   logs_analyze_net:
     driver: bridge
     name: logs_analyze_net
 
+# ============================================================================
+# VOLÚMENES
+# ============================================================================
 volumes:
   mongodb_data:
     driver: local
@@ -195,3 +264,10 @@ volumes:
     driver: local
   redis_data:
     driver: local
+  qdrant_storage:
+    driver: local
+
+# ============================================================================
+# NOTA: Todos los volúmenes usan rutas locales del proyecto
+# No se definen volúmenes de Docker, todo se monta desde carpetas locales
+# ============================================================================

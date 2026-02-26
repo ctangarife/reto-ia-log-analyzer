@@ -26,7 +26,7 @@ def test_v2_endpoints():
     # 2. Probar endpoint V2 con archivo de prueba
     print("\n2. Probando endpoint /api/v2/process...")
     try:
-        with open("data/anomaly-detector/test_logs.txt", "rb") as f:
+        with open("data/backend-python/test_logs.txt", "rb") as f:
             files = {"file": f}
             response = requests.post(f"{base_url}/api/v2/process", files=files)
             

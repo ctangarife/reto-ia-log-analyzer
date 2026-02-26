@@ -1,0 +1,74 @@
+# ============================================================================
+# Core Framework
+# ============================================================================
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+email-validator==2.1.0  # Requerido para EmailStr en modelos RBAC
+python-multipart==0.0.6
+
+# ============================================================================
+# Machine Learning
+# ============================================================================
+scikit-learn==1.3.2
+pandas==2.1.4
+numpy==1.25.2
+
+# ============================================================================
+# Databases
+# ============================================================================
+# MongoDB
+motor==3.3.2
+pymongo==4.6.1
+
+# PostgreSQL
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+
+# Redis (redis 5.0+ incluye soporte async con redis.asyncio)
+redis==5.0.1
+
+# SQLAlchemy (usado en algunos módulos legacy)
+sqlalchemy==2.0.23
+
+# ============================================================================
+# Vector Database & Embeddings
+# ============================================================================
+qdrant-client==1.7.0
+sentence-transformers==2.2.2
+torch==2.1.0
+
+# ============================================================================
+# LLM - Ollama Cloud
+# ============================================================================
+ollama-client-lib>=1.0.0
+
+# ============================================================================
+# HTTP Clients
+# ============================================================================
+# requests usado en endpoints V1 legacy
+requests==2.31.0
+# httpx usado por ollama-client-lib internamente
+httpx==0.25.0
+
+# ============================================================================
+# Utilities
+# ============================================================================
+psutil==5.9.6
+
+# ============================================================================
+# Authentication & Security
+# ============================================================================
+python-jose[cryptography]==3.3.0  # JWT tokens
+passlib[bcrypt]==1.7.4  # Password hashing
+bcrypt==4.0.1  # Versión compatible con passlib 1.7.4 (evita AttributeError __about__)
+
+# ============================================================================
+# Optional Dependencies (comentadas si no se usan activamente)
+# ============================================================================
+# alembic==1.13.1  # Solo si se hacen migraciones de DB
+
+# ============================================================================
+# NOTA: Migración completada - aioredis eliminado, usando redis.asyncio
+# Todos los módulos ahora usan redis.asyncio (incluido en redis>=5.0)
+# ============================================================================

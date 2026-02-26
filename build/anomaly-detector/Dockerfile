@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y \
 # Crear directorio para reportes
 RUN mkdir -p /app/reports
 
-# Nota: El código se monta como volumen desde data/anomaly-detector/
+# Nota: El código se monta como volumen desde data/backend-python/
 # Las dependencias se instalan en tiempo de ejecución via docker-compose
 
 # Exponer puerto

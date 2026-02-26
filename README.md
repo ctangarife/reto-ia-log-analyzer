@@ -100,7 +100,7 @@ El sistema está compuesto por los siguientes servicios en contenedores Docker:
 ## Estructura de Directorios
 
 ```
-reto-ia-log-analyzer/
+logsanomaly/
 ├── build/                      # Dockerfiles y configuraciones
 │   ├── anomaly-detector/      # Servicio de detección
 │   │   └── Dockerfile         # Imagen del backend
@@ -114,16 +114,14 @@ reto-ia-log-analyzer/
 │   └── redis/                # Configuración Redis
 │       └── redis.conf         # Archivo de configuración
 ├── data/                       # Código de la aplicación
-│   ├── anomaly-detector/      # Backend (FastAPI)
+│   ├── backend-python/        # Backend (FastAPI)
 │   │   ├── main.py            # API principal
 │   │   ├── requirements.txt    # Dependencias Python
 │   │   ├── config/            # Configuraciones
-│   │   ├── database/          # Scripts de BD
-│   │   │   └── init.sql       # Inicialización PostgreSQL
 │   │   ├── scripts/           # Scripts auxiliares
 │   │   ├── chunks/            # Almacenamiento temporal
 │   │   └── reports/           # Reportes generados
-│   ├── ui/                    # Frontend (Vue3)
+│   ├── frontend/              # Frontend (Vue3)
 │   │   ├── package.json       # Dependencias Node.js
 │   │   ├── src/
 │   │   │   ├── components/    # Componentes Vue
@@ -133,9 +131,22 @@ reto-ia-log-analyzer/
 │   ├── models/                # Modelos LLM descargados
 │   │   └── ollama/            # Modelos de Ollama
 │   └── static/                # Archivos estáticos servidos por Nginx
-├── nginx/                      # Configuración del proxy
-│   └── nginx.conf             # Configuración Nginx
-└── docker-compose.yml          # Orquestación de servicios
+├── db/                        # Scripts de bases de datos
+│   ├── init.sql              # Inicialización PostgreSQL
+│   └── init-mongo.js         # Inicialización MongoDB
+├── doc/                       # Documentación
+│   ├── Arquitectura.MD
+│   ├── CONTEXT.md
+│   ├── FEATURES.md
+│   └── ...
+├── server/                    # Configuraciones de servidor
+│   └── nginx/                 # Configuración Nginx
+│       ├── nginx.conf
+│       ├── conf.d/
+│       └── includes/
+├── docker-compose.yml          # Orquestación de servicios
+├── env.template                # Template de variables de entorno
+└── README.md                   # Este archivo
 ```
 
 ## Flujos Principales
@@ -299,10 +310,9 @@ Acceda a la interfaz web a través de http://localhost:80
 Para cambiar el modelo, edite las siguientes líneas en el archivo `docker-compose.yml`:
 
 ```yaml
-# En el servicio anomaly-detector
-environment:
-  - OLLAMA_SERVICE_URL=http://ollama-service:11434
-  - MODEL_NAME=qwen2.5:3b  # Cambie a su modelo preferido
+# En el servicio anomaly-detector (usar archivo .env)
+# OLLAMA_SERVICE_URL=http://ollama-service:11434
+# MODEL_NAME=qwen2.5:3b  # Cambie a su modelo preferido
 
 # En el servicio ollama-service
 environment:
@@ -338,7 +348,7 @@ deploy:
 
 #### Parámetros de Detección
 
-Para ajustar la sensibilidad del detector de anomalías, edite el archivo `data/anomaly-detector/main.py`:
+Para ajustar la sensibilidad del detector de anomalías, edite el archivo `data/backend-python/main.py`:
 
 ```python
 isolation_forest = IsolationForest(
@@ -509,11 +519,11 @@ environment:
 Por defecto usa MongoDB, PostgreSQL y Redis. Para usar solo una:
 ```yaml
 # En docker-compose.yml, comentar los servicios no deseados
-# y ajustar las variables de entorno en anomaly-detector
+# y ajustar las variables de entorno en el archivo .env
 ```
 
 #### ¿Cómo ajustar la sensibilidad de detección?
-Edite `data/anomaly-detector/main.py`:
+Edite `data/backend-python/main.py`:
 ```python
 # Valores más bajos = más sensible (más anomalías detectadas)
 isolation_forest = IsolationForest(
@@ -534,7 +544,7 @@ docker stats
 docker-compose logs -f
 
 # Ver logs de un servicio específico
-docker-compose logs -f anomaly-detector
+docker-compose logs -f logs-analyze-detector
 
 # Ver modelos descargados
 docker exec logs-analyze-ollama ollama list
