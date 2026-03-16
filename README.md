@@ -309,9 +309,9 @@ Puede probar el sistema con archivos de ejemplo:
 - **Docker Compose**: v2.0 o superior
 - **Hardware Recomendado**:
   - CPU: 4 cores o más
-  - RAM: 16GB mínimo (32GB recomendado para mejores resultados)
+  - RAM: 8GB mínimo (16GB recomendado para mejores resultados)
   - Almacenamiento: 10GB libres mínimo
-  - GPU: NVIDIA compatible con CUDA (opcional, mejora significativamente el rendimiento del LLM)
+  - Conexión a internet (requerido para Ollama Cloud)
 
 ### 2. Instalación Básica
 
@@ -369,23 +369,6 @@ OLLAMA_MODEL=qwen2.5:3b  # Modelo a utilizar
 - `phi3:mini` - Modelo muy ligero para recursos limitados
 
 ### Configuración del Sistema
-
-#### Ajustes de Hardware
-
-Ajuste los límites de recursos en `docker-compose.yml` según las capacidades de su sistema:
-
-```yaml
-# Para el servicio de Ollama (LLM)
-deploy:
-  resources:
-    reservations:
-      devices:
-        - driver: nvidia
-          count: all
-          capabilities: [ gpu ]
-    limits:
-      memory: 16G  # Ajuste según la RAM disponible
-```
 
 #### Parámetros de Detección
 
@@ -504,33 +487,15 @@ deploy:
     limits:
       memory: 8G  # Reducir de 16G a 8G
 ```
-O usar un modelo más pequeño como `phi3:mini`
-
-#### El servicio Ollama no responde
-**Solución**:
-```bash
-# Verificar estado del contenedor
-docker logs logs-analyze-ollama
-
-# Si necesita reiniciar solo el servicio Ollama
-docker-compose restart ollama-service
-```
+O usar un modelo más ligero como `phi3:mini`
 
 ### Problemas de Rendimiento
 
 #### El análisis de logs es muy lento
 **Soluciones**:
-1. **Sin GPU**: Usar modelos más pequeños
-   ```yaml
-   environment:
-     - MODEL_NAME=phi3:mini  # Modelo ligero
-   ```
-
-2. **Con GPU**: Verificar que NVIDIA Docker esté instalado
-   ```bash
-   # Verificar GPU disponible
-   docker run --rm --gpus all nvidia/cuda:11.0-base nvidia-smi
-   ```
+1. **Reducir tamaño de chunk** en el backend
+2. **Verificar conexión a internet** para Ollama Cloud
+3. **Considerar plan superior** de Ollama Cloud para mayor rate limit
 
 3. **Ajustar tamaño de chunk** en el backend
 
@@ -589,9 +554,6 @@ docker-compose logs -f
 
 # Ver logs de un servicio específico
 docker-compose logs -f logs-analyze-detector
-
-# Ver modelos descargados
-docker exec logs-analyze-ollama ollama list
 ```
 
 #### Limpieza y Mantenimiento
@@ -612,8 +574,8 @@ docker-compose build --no-cache
 # Backup de los datos
 docker run --rm -v logsanomaly_mongodb_data:/data -v $(pwd):/backup ubuntu tar czf /backup/mongodb-backup.tar.gz -C /data .
 
-# Backup de los modelos
-docker run --rm -v logs-analyze-ollama_models:/models -v $(pwd):/backup ubuntu tar czf /backup/models-backup.tar.gz -C /models .
+# Backup de PostgreSQL
+docker exec logs-analyze-postgres pg_dump -U anomaly_user logsanomaly > backup.sql
 ```
 
 ### Contacto y Soporte
@@ -688,7 +650,7 @@ Este proyecto está licenciado bajo la Licencia MIT. Consulte el archivo [LICENS
 
 ## Agradecimientos
 
-- **Ollama** por proporcionar una plataforma excelente para modelos LLM
+- **Ollama Cloud** por proporcionar una plataforma excelente para modelos LLM
 - **FastAPI** por el framework web rápido y robusto
 - **Vue.js** por el framework frontend intuitivo
 - **PrimeVue** por los componentes UI de alta calidad
