@@ -132,3 +132,6 @@ temp/
 .claude
 CLAUDE.MD
 .cursor
+.claude/*
+doc/*
+data/static/*

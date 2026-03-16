@@ -192,10 +192,10 @@ async def validate_workspace_access(user_id: UUID, workspace_id: UUID) -> bool:
 async def get_project_workspace(project_id: UUID) -> Optional[UUID]:
     """
     Obtiene el workspace_id de un proyecto.
-    
+
     Args:
         project_id: ID del proyecto
-    
+
     Returns:
         workspace_id o None si no existe
     """
@@ -211,4 +211,75 @@ async def get_project_workspace(project_id: UUID) -> Optional[UUID]:
     except Exception as e:
         logger.error(f"Error obteniendo workspace del proyecto: {e}")
         return None
+
+
+async def get_user_project_permissions(user_id: UUID, project_id: UUID) -> dict:
+    """
+    Obtiene todos los permisos de un usuario en un proyecto, incluyendo roles.
+
+    Args:
+        user_id: ID del usuario
+        project_id: ID del proyecto
+
+    Returns:
+        Dict con project_id, permissions (lista de strings), y roles
+    """
+    try:
+        async with db_manager.postgres_pool.acquire() as conn:
+            # Obtener roles del usuario en el proyecto (directos o heredados del workspace)
+            rows = await conn.fetch(
+                """
+                SELECT DISTINCT
+                    r.id as role_id,
+                    r.name as role_name,
+                    p.module as permission_module,
+                    p.action as permission_action
+                FROM auth.roles r
+                JOIN auth.role_permissions rp ON r.id = rp.role_id
+                JOIN auth.permissions p ON rp.permission_id = p.id
+                JOIN auth.user_project_roles upr ON r.id = upr.role_id
+                LEFT JOIN auth.user_workspace_roles uwr ON (
+                    upr.project_id IN (
+                        SELECT id FROM auth.projects WHERE workspace_id = (
+                            SELECT workspace_id FROM auth.projects WHERE id = $2
+                        )
+                    )
+                    AND uwr.user_id = $1
+                    AND uwr.role_id = r.id
+                )
+                WHERE (upr.user_id = $1 AND upr.project_id = $2)
+                   OR (uwr.user_id = $1)
+                """,
+                user_id, project_id
+            )
+
+            # Construir respuesta
+            permissions_set = set()
+            roles_dict = {}
+
+            for row in rows:
+                perm_str = f"{row['permission_module']}:{row['permission_action']}"
+                permissions_set.add(perm_str)
+
+                role_id = str(row['role_id'])
+                if role_id not in roles_dict:
+                    roles_dict[role_id] = {
+                        "role_id": role_id,
+                        "name": row['role_name'],
+                        "permissions": []
+                    }
+                roles_dict[role_id]["permissions"].append(perm_str)
+
+            return {
+                "project_id": str(project_id),
+                "permissions": list(permissions_set),
+                "roles": list(roles_dict.values())
+            }
+    except Exception as e:
+        logger.error(f"Error obteniendo permisos del proyecto: {e}")
+        return {
+            "project_id": str(project_id),
+            "permissions": [],
+            "roles": []
+        }
 

@@ -17,16 +17,16 @@ class ChunkService:
     def __init__(self):
         self.chunk_size = 1024 * 1024  # 1MB
     
-    async def create_chunks_from_file(self, file_content: str, filename: str) -> str:
+    async def create_chunks_from_file(self, file_content: str, filename: str, file_hash: str = None) -> str:
         """Divide el archivo en chunks y los guarda en MongoDB"""
         file_id = str(uuid.uuid4())
-        
+
         # Dividir en chunks respetando líneas
         lines = file_content.split('\n')
         chunks = []
         current_chunk = ""
         chunk_number = 0
-        
+
         for line in lines:
             if len(current_chunk) + len(line) + 1 > self.chunk_size and current_chunk:
                 # Guardar chunk actual
@@ -42,7 +42,7 @@ class ChunkService:
                 current_chunk = line
             else:
                 current_chunk += "\n" + line if current_chunk else line
-        
+
         # Guardar último chunk si no está vacío
         if current_chunk:
             chunk_data = ChunkData(
@@ -53,11 +53,11 @@ class ChunkService:
                 processed=False
             )
             chunks.append(chunk_data.dict())
-        
+
         # Guardar chunks en MongoDB
         if chunks:
             await db_manager.mongodb_client.logsanomaly.chunks.insert_many(chunks)
-        
+
         # Crear job en PostgreSQL
         job = ProcessingJob(
             id=file_id,
@@ -66,13 +66,13 @@ class ChunkService:
             total_chunks=len(chunks),
             status="pending"
         )
-        
+
         async with db_manager.postgres_pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO processing.processing_jobs (id, filename, total_size, total_chunks, status)
-                VALUES ($1, $2, $3, $4, $5)
-            """, job.id, job.filename, job.total_size, job.total_chunks, job.status)
-        
+                INSERT INTO processing.processing_jobs (id, filename, total_size, total_chunks, status, file_hash)
+                VALUES ($1, $2, $3, $4, $5, $6)
+            """, job.id, job.filename, job.total_size, job.total_chunks, job.status, file_hash)
+
         return file_id
     
     async def get_chunks_to_process(self, file_id: str) -> List[Dict[str, Any]]:

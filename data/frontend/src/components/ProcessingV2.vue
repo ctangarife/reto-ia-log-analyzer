@@ -26,6 +26,13 @@
       <div class="streaming-summary">
         <p>Total de anomalías detectadas hasta ahora: <strong>{{ accumulatedAnomalies.length }}</strong></p>
       </div>
+
+      <!-- Mensaje de completado -->
+      <div v-if="allComplete" class="completion-message">
+        <h5>✅ Procesamiento completado</h5>
+        <p>Total de anomalías detectadas: <strong>{{ accumulatedAnomalies.length }}</strong></p>
+        <Button label="Ver detalles" severity="success" text @click="goToHistory" />
+      </div>
       <div 
         v-for="result in streamingResults" 
         :key="result.chunk_number"
@@ -33,7 +40,7 @@
       >
         <h5>Chunk {{ result.chunk_number }}</h5>
         <p>Anomalías: {{ result.anomalies.length }}</p>
-        <p>Progreso: {{ (result.progress * 100).toFixed(1) }}%</p>
+        <p>Progreso: {{ Number(result.progress).toFixed(1) }}%</p>
         <div v-if="result.is_complete" class="complete-indicator">
           ✅ Completado
         </div>
@@ -44,10 +51,13 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useAuthStore } from '../stores/authStore'
 import type { StreamResult } from '../stores/analysisStore'
+import Button from 'primevue/button'
 
+const router = useRouter()
 const analysisStore = useAnalysisStore()
 const authStore = useAuthStore()
 const streamingResults = ref<StreamResult[]>([])
@@ -55,6 +65,12 @@ const statusInterval = ref<NodeJS.Timeout | null>(null)
 const accumulatedAnomalies = ref<any[]>([])
 
 const currentJob = computed(() => analysisStore.currentJob)
+
+// Verificar si todos los resultados están completos
+const allComplete = computed(() => {
+  return streamingResults.value.length > 0 &&
+         streamingResults.value.every(r => r.is_complete)
+})
 
 // Funciones de polling y streaming (definidas antes del watch)
 async function startStatusPolling(jobId: string) {
@@ -124,10 +140,30 @@ async function startStreaming(jobId: string) {
           })
         }
       } else if (data.type === 'job_completed') {
-        // Marcar todos como completados
+        // Marcar todos como completados con progreso al 100%
         streamingResults.value.forEach(r => {
           r.is_complete = true
+          r.progress = 100
         })
+        // Mostrar resumen final
+        const totalAnomalies = data.total_anomalies ?? accumulatedAnomalies.value.length
+        console.log('Job completado, total anomalías:', totalAnomalies)
+      } else if (data.type === 'chunk_progress') {
+        // Actualizar progreso general del procesamiento
+        const progress = Math.round((data.current_chunk / data.total_chunks) * 100)
+        console.log(`Progreso chunk: ${data.current_chunk}/${data.total_chunks} (${progress}%)`)
+        // Crear un resultado temporal para mostrar progreso
+        const existingResult = streamingResults.value.find(r => r.chunk_number === data.current_chunk)
+        if (!existingResult) {
+          streamingResults.value.push({
+            chunk_number: data.current_chunk,
+            anomalies: [],
+            progress: progress,
+            is_complete: false
+          })
+        }
+      } else if (data.type === 'stream_started') {
+        console.log('Stream iniciado para job:', data.job_id)
       }
     })
   } catch (error: any) {
@@ -164,6 +200,10 @@ async function cancelProcessing() {
       }
     }
   }
+}
+
+function goToHistory() {
+  router.push({ name: 'history' })
 }
 
 onMounted(() => {
@@ -233,5 +273,25 @@ onUnmounted(() => {
 .complete-indicator {
   color: #4CAF50;
   font-weight: bold;
+}
+
+.completion-message {
+  background-color: #e8f5e9;
+  border: 1px solid #4CAF50;
+  border-radius: 8px;
+  padding: 15px;
+  margin: 15px 0;
+  text-align: center;
+}
+
+.completion-message h5 {
+  margin: 0 0 10px 0;
+  color: #2e7d32;
+  font-size: 1.1rem;
+}
+
+.completion-message p {
+  margin: 5px 0 15px 0;
+  color: #1b5e20;
 }
 </style>

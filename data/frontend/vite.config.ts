@@ -13,6 +13,12 @@ export default defineConfig({
   server: {
     host: true,
     port: 3000,
+    headers: {
+      // Desactivar caché en desarrollo
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    },
     proxy: {
       '/api': {
         target: 'http://anomaly-detector:8000',
@@ -20,5 +26,9 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api/, '')
       }
     }
+  },
+  build: {
+    // Desactivar cache del módulo en desarrollo
+    modulePreload: false
   }
 })

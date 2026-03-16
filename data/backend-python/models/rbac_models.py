@@ -86,7 +86,7 @@ class ProjectBase(BaseModel):
 
 
 class ProjectCreate(ProjectBase):
-    workspace_id: UUID
+    workspace_id: Optional[UUID] = None  # Se toma de la URL en el endpoint /workspaces/{workspace_id}/projects
     slug: Optional[str] = None  # Si no se proporciona, se genera del name
 
 

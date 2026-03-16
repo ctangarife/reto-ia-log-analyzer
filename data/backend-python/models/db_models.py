@@ -78,8 +78,8 @@ class Configuration(Base):
     """processing.configurations - Configuración del modelo de anomalías."""
     __tablename__ = "configurations"
     __table_args__ = (
-        {"schema": "processing"},
         Index("idx_config_active", "is_active"),
+        {"schema": "processing"},
     )
 
     id: Mapped[Any] = mapped_column(
@@ -106,10 +106,10 @@ class User(Base):
     """auth.users - Usuarios del sistema."""
     __tablename__ = "users"
     __table_args__ = (
-        {"schema": "auth"},
         Index("idx_users_email", "email"),
         Index("idx_users_username", "username"),
         Index("idx_users_active", "is_active"),
+        {"schema": "auth"},
     )
 
     id: Mapped[Any] = mapped_column(
@@ -182,8 +182,8 @@ class Permission(Base):
     """auth.permissions - Acciones por módulo (read, write, delete, admin)."""
     __tablename__ = "permissions"
     __table_args__ = (
-        {"schema": "auth"},
         UniqueConstraint("module_id", "action", name="uq_permissions_module_action"),
+        {"schema": "auth"},
     )
 
     id: Mapped[Any] = mapped_column(
@@ -231,8 +231,8 @@ class RolePermission(Base):
     """auth.role_permissions - Relación roles -> permisos."""
     __tablename__ = "role_permissions"
     __table_args__ = (
-        {"schema": "auth"},
         UniqueConstraint("role_id", "permission_id", name="uq_role_permissions_role_permission"),
+        {"schema": "auth"},
     )
 
     id: Mapped[Any] = mapped_column(
@@ -259,9 +259,9 @@ class Workspace(Base):
     """auth.workspaces - Espacios de trabajo (nivel superior)."""
     __tablename__ = "workspaces"
     __table_args__ = (
-        {"schema": "auth"},
         Index("idx_workspaces_slug", "slug"),
         Index("idx_workspaces_active", "is_active"),
+        {"schema": "auth"},
     )
 
     id: Mapped[Any] = mapped_column(
@@ -292,10 +292,10 @@ class Project(Base):
     """auth.projects - Proyectos (hijos de workspaces)."""
     __tablename__ = "projects"
     __table_args__ = (
-        {"schema": "auth"},
         Index("idx_projects_workspace", "workspace_id"),
         Index("idx_projects_slug", "slug"),
         Index("idx_projects_active", "is_active"),
+        {"schema": "auth"},
     )
 
     id: Mapped[Any] = mapped_column(
@@ -327,10 +327,10 @@ class UserWorkspaceRole(Base):
     """auth.user_workspace_roles - Asignación usuario -> workspace -> rol."""
     __tablename__ = "user_workspace_roles"
     __table_args__ = (
-        {"schema": "auth"},
         UniqueConstraint("user_id", "workspace_id", "role_id", name="uq_user_workspace_roles"),
         Index("idx_user_workspace_roles_user", "user_id"),
         Index("idx_user_workspace_roles_workspace", "workspace_id"),
+        {"schema": "auth"},
     )
 
     id: Mapped[Any] = mapped_column(
@@ -359,10 +359,10 @@ class UserProjectRole(Base):
     """auth.user_project_roles - Asignación usuario -> proyecto -> rol."""
     __tablename__ = "user_project_roles"
     __table_args__ = (
-        {"schema": "auth"},
         UniqueConstraint("user_id", "project_id", "role_id", name="uq_user_project_roles"),
         Index("idx_user_project_roles_user", "user_id"),
         Index("idx_user_project_roles_project", "project_id"),
+        {"schema": "auth"},
     )
 
     id: Mapped[Any] = mapped_column(

@@ -27,6 +27,7 @@ from models.v2_models import (
 from services.chunk_service import chunk_service
 from services.worker_service import worker_service
 from services.monitoring_service import monitoring_service
+from services import qdrant_service
 
 # Imports de rutas
 from routes.auth import router as auth_router
@@ -115,17 +116,56 @@ async def process_file(file: UploadFile = File(...)):
         # Verificar si ya hay un archivo procesándose
         if worker_service.current_processing_job:
             raise HTTPException(
-                status_code=409, 
+                status_code=409,
                 detail=f"Ya hay un archivo procesándose: {worker_service.current_processing_job}. Solo se puede procesar un archivo a la vez."
             )
-        
+
         # Leer contenido del archivo
         content = await file.read()
-        file_content = content.decode('utf-8')
-        
-        # Crear chunks y job
-        file_id = await chunk_service.create_chunks_from_file(file_content, file.filename)
+        try:
+            file_content = content.decode('utf-8')
+        except UnicodeDecodeError:
+            # Intentar con latin-1 si falla utf-8 (CSV a veces tiene caracteres especiales)
+            file_content = content.decode('latin-1')
+            logger.warning(f"Archivo {file.filename} no es UTF-8, usando latin-1")
+
+        # Calcular hash SHA-256 del contenido para detectar duplicados
+        import hashlib
+        file_hash = hashlib.sha256(content).hexdigest()
+
+        # Verificar si ya existe un reporte con el mismo hash
+        async with db_manager.postgres_pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                """
+                SELECT id, filename, created_at
+                FROM processing.processing_jobs
+                WHERE file_hash = $1
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                file_hash
+            )
+
+            if existing:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Este archivo ya fue procesado anteriormente (ID: {existing['id']}, fecha: {existing['created_at']}). Usa el botón 'Re-analizar' en el historial o elimina el reporte anterior primero."
+                )
+
+        # Crear chunks y job (pasar file_hash para detección de duplicados)
+        file_id = await chunk_service.create_chunks_from_file(file_content, file.filename, file_hash)
         logger.info(f"✅ Chunks creados para archivo {file.filename}, file_id: {file_id}")
+
+        # Guardar contenido original del archivo para posible re-análisis
+        await db_manager.mongodb_client.logsanomaly.raw_files.insert_one({
+            "_id": file_id,
+            "filename": file.filename,
+            "content": file_content,
+            "size": len(content),
+            "upload_date": datetime.utcnow(),
+            "file_hash": file_hash
+        })
+        logger.info(f"✅ Archivo original guardado para re-análisis: {file_id}")
         
         # Iniciar procesamiento asíncrono
         logger.info(f"🚀 Iniciando procesamiento asíncrono para {file_id}")
@@ -149,8 +189,18 @@ async def process_file(file: UploadFile = File(...)):
         )
         
     except Exception as e:
-        logger.error(f"Error procesando archivo: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        # Mejorar manejo de errores para HTTPException
+        if isinstance(e, HTTPException):
+            # Si es HTTPException, relanzarla tal cual
+            raise
+
+        error_detail = str(e) if str(e) else type(e).__name__
+        logger.error(f"Error procesando archivo: {error_detail}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al procesar el archivo: {error_detail}"
+        )
 
 @app.get("/status/{job_id}", response_model=StatusResponseV2)
 async def get_status(job_id: str):
@@ -240,16 +290,136 @@ async def cancel_job(job_id: str):
     try:
         async with db_manager.postgres_pool.acquire() as conn:
             await conn.execute("""
-                UPDATE processing.processing_jobs 
-                SET status = $1, completed_at = $2 
+                UPDATE processing.processing_jobs
+                SET status = $1, completed_at = $2
                 WHERE id = $3
             """, ProcessingStatus.CANCELLED, datetime.utcnow(), job_id)
-        
+
         return {"message": "Procesamiento cancelado", "job_id": job_id}
-        
+
     except Exception as e:
         logger.error(f"Error cancelando job: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/jobs/{job_id}")
+async def delete_job(job_id: str):
+    """Eliminar un job y todos sus datos asociados (chunks, resultados, vectores)"""
+    try:
+        from bson import ObjectId
+
+        # Eliminar vectores de Qdrant
+        await qdrant_service.delete_job_logs(job_id)
+        logger.info(f"Eliminados vectores de Qdrant del job {job_id}")
+
+        # Eliminar chunks de MongoDB
+        chunks_result = await db_manager.mongodb_client.logsanomaly.chunks.delete_many({
+            "file_id": job_id
+        })
+        logger.info(f"Eliminados {chunks_result.deleted_count} chunks del job {job_id}")
+
+        # Eliminar resultados de anomalías de MongoDB
+        results_result = await db_manager.mongodb_client.logsanomaly.results.delete_many({
+            "chunk_id": {"$regex": f"^{job_id}"}
+        })
+        logger.info(f"Eliminados {results_result.deleted_count} resultados del job {job_id}")
+
+        # Eliminar estadísticas de PostgreSQL
+        async with db_manager.postgres_pool.acquire() as conn:
+            stats_deleted = await conn.execute("""
+                DELETE FROM processing.processing_stats
+                WHERE job_id = $1
+            """, job_id)
+            logger.info(f"Eliminadas estadísticas del job {job_id}")
+
+            # Eliminar job de PostgreSQL
+            job_deleted = await conn.execute("""
+                DELETE FROM processing.processing_jobs
+                WHERE id = $1
+            """, job_id)
+            logger.info(f"Eliminado job {job_id} de processing_jobs")
+
+        return {
+            "message": "Job eliminado correctamente",
+            "job_id": job_id,
+            "chunks_deleted": chunks_result.deleted_count,
+            "results_deleted": results_result.deleted_count
+        }
+
+    except Exception as e:
+        logger.error(f"Error eliminando job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/jobs/{job_id}/reanalyze", response_model=ProcessResponseV2)
+async def reanalyze_job(job_id: str):
+    """Re-analizar un archivo usando el contenido original guardado"""
+    try:
+        # Verificar si ya hay un archivo procesándose
+        if worker_service.current_processing_job:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Ya hay un archivo procesándose: {worker_service.current_processing_job}. Solo se puede procesar un archivo a la vez."
+            )
+
+        # Recuperar el contenido original del archivo
+        raw_file = await db_manager.mongodb_client.logsanomaly.raw_files.find_one({"_id": job_id})
+
+        if not raw_file:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No se encontró el contenido original del archivo {job_id}. El re-análisis no está disponible para este job."
+            )
+
+        file_content = raw_file.get("content", "")
+        filename = raw_file.get("filename", "unknown")
+        original_hash = raw_file.get("file_hash", "")
+
+        # Crear chunks y job (esto generará un nuevo file_id)
+        new_job_id = await chunk_service.create_chunks_from_file(file_content, filename, original_hash)
+        logger.info(f"✅ Chunks creados para re-análisis {filename}, job_id: {new_job_id}")
+
+        # Guardar contenido original con el nuevo job_id para futuros re-análisis
+        await db_manager.mongodb_client.logsanomaly.raw_files.insert_one({
+            "_id": new_job_id,
+            "filename": filename,
+            "content": file_content,
+            "size": len(file_content.encode('utf-8')),
+            "upload_date": datetime.utcnow(),
+            "file_hash": original_hash,
+            "reanalyzed_from": job_id  # Referencia al job original
+        })
+        logger.info(f"✅ Archivo original guardado para re-análisis: {new_job_id} (original: {job_id})")
+
+        # Iniciar procesamiento asíncrono
+        logger.info(f"🚀 Iniciando re-procesamiento asíncrono para {new_job_id}")
+        task = asyncio.create_task(worker_service.process_file_async(new_job_id))
+        logger.info(f"📋 Tarea de re-procesamiento creada: {task}")
+
+        # Actualizar estado a processing
+        async with db_manager.postgres_pool.acquire() as conn:
+            await conn.execute("""
+                UPDATE processing.processing_jobs
+                SET status = $1, started_at = $2
+                WHERE id = $3
+            """, ProcessingStatus.PROCESSING, datetime.utcnow(), new_job_id)
+        logger.info(f"📊 Estado actualizado a processing para {new_job_id}")
+
+        return ProcessResponseV2(
+            job_id=new_job_id,
+            status=ProcessingStatus.PROCESSING,
+            message=f"Re-análisis iniciado (archivo original: {job_id})",
+            total_chunks=len(file_content.split('\n')) // 1000
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_detail = str(e) if str(e) else type(e).__name__
+        logger.error(f"Error en re-análisis: {error_detail}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error al iniciar el re-análisis: {error_detail}"
+        )
 
 @app.get("/reports")
 async def get_reports():

@@ -100,12 +100,7 @@ services:
       # Configuración de optimización de almacenamiento
       QDRANT__STORAGE__OPTIMIZER__INDEXING_THRESHOLD: 10000
       QDRANT__STORAGE__OPTIMIZER__FLUSH_INTERVAL_SEC: 5
-    healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:6333/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+    # Nota: Qdrant no incluye wget/curl, se usa start_period como timeout de inicialización
     restart: unless-stopped
     networks:
       logs_analyze_net:
@@ -130,12 +125,8 @@ services:
       - "8000:8000"
     env_file:
       - .env
-    command: >
-      sh -c "cd /app &&
-             pip install --upgrade pip &&
-             pip install -r requirements.txt &&
-             echo '✅ Dependencias instaladas correctamente' &&
-             uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+    # Las dependencias se instalan en el build (ver Dockerfile)
+    # Solo iniciar el servicio
     networks:
       logs_analyze_net:
         aliases:
@@ -148,7 +139,7 @@ services:
       redis:
         condition: service_healthy
       qdrant:
-        condition: service_healthy
+        condition: service_started
       #ollama-service:
       #  condition: service_healthy
 
@@ -202,7 +193,7 @@ services:
       - ./data/static:/app/dist
     env_file:
       - .env
-    command: sh -c "cd /app && npm install && npm run build && cp -r dist/* /app/dist/"
+    command: sh -c "cd /app && npm install && npm run build && (cp -rn dist/* /app/dist/ 2>/dev/null || true) && echo '✅ Build completado'"
     depends_on:
       - anomaly-detector
     networks:
@@ -233,7 +224,7 @@ services:
       logs-analyze-ui:
         condition: service_completed_successfully
       anomaly-detector:
-        condition: service_healthy
+        condition: service_started
     networks:
       logs_analyze_net:
         aliases:

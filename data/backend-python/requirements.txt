@@ -35,8 +35,7 @@ sqlalchemy==2.0.23
 # Vector Database & Embeddings
 # ============================================================================
 qdrant-client==1.7.0
-sentence-transformers==2.2.2
-torch==2.1.0
+fastembed>=0.2.0  # Alternativa ligera a sentence-transformers (~50MB vs ~2GB)
 
 # ============================================================================
 # LLM - Ollama Cloud

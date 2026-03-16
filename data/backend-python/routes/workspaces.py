@@ -5,6 +5,7 @@ Endpoints CRUD para workspaces (prefijo /workspaces; /api lo añade nginx).
 import logging
 from uuid import UUID
 from fastapi import APIRouter, HTTPException, status, Depends
+from pydantic import BaseModel
 
 from models.rbac_models import WorkspaceCreate, WorkspaceUpdate, ProjectCreate
 from services.workspace_service import (
@@ -22,6 +23,11 @@ from services.project_service import (
     list_projects_for_user_in_workspace,
     create_project,
     get_project_by_id,
+)
+from services.rbac_service import (
+    assign_user_to_workspace,
+    remove_user_from_workspace,
+    get_user_roles_in_workspace,
 )
 from middleware.auth_middleware import get_current_user, CurrentUser
 
@@ -343,3 +349,140 @@ async def delete_workspace(
             detail="Workspace no encontrado",
         )
     return {"message": "Workspace desactivado", "workspace_id": str(workspace_id)}
+
+
+class AssignMemberRequest(BaseModel):
+    """Request body para asignar miembro a workspace."""
+    user_id: str
+    role: str
+
+
+@router.post("/{workspace_id}/members", status_code=status.HTTP_201_CREATED)
+async def assign_workspace_member(
+    workspace_id: UUID,
+    body: AssignMemberRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Asigna un usuario a un workspace con un rol específico.
+
+    Requiere permiso workspaces:admin en el workspace, o ser super administrador.
+
+    Args:
+        workspace_id: ID del workspace
+        body: Contiene user_id y role (viewer, analyst, workspace_admin)
+        current_user: Usuario actual
+
+    Returns:
+        Mensaje de confirmación
+    """
+    has_access = await validate_workspace_access(current_user.user_id, workspace_id)
+    if not has_access:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace no encontrado o sin acceso",
+        )
+    if not current_user.is_super_admin:
+        can_admin = await check_workspace_permission(
+            current_user.user_id, workspace_id, "workspaces", "admin"
+        )
+        if not can_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Sin permiso para asignar miembros a este workspace",
+            )
+
+    try:
+        user_uuid = UUID(body.user_id)
+        success = await assign_user_to_workspace(
+            user_id=user_uuid,
+            workspace_id=workspace_id,
+            role_name=body.role,
+            assigned_by=current_user.user_id
+        )
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Error al asignar el usuario al workspace",
+            )
+        return {
+            "message": f"Usuario asignado al workspace con rol {body.role}",
+            "user_id": body.user_id,
+            "workspace_id": str(workspace_id),
+            "role": body.role
+        }
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="user_id inválido",
+        )
+    except Exception as e:
+        logger.error(f"Error asignando miembro: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al asignar el usuario al workspace",
+        )
+
+
+@router.delete("/{workspace_id}/members/{user_id}", status_code=status.HTTP_200_OK)
+async def remove_workspace_member(
+    workspace_id: UUID,
+    user_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Elimina la asignación de un usuario a un workspace.
+
+    Requiere permiso workspaces:admin en el workspace, o ser super administrador.
+
+    Args:
+        workspace_id: ID del workspace
+        user_id: ID del usuario a remover
+        current_user: Usuario actual
+
+    Returns:
+        Mensaje de confirmación
+    """
+    has_access = await validate_workspace_access(current_user.user_id, workspace_id)
+    if not has_access:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workspace no encontrado o sin acceso",
+        )
+    if not current_user.is_super_admin:
+        can_admin = await check_workspace_permission(
+            current_user.user_id, workspace_id, "workspaces", "admin"
+        )
+        if not can_admin:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Sin permiso para remover miembros de este workspace",
+            )
+
+    try:
+        user_uuid = UUID(user_id)
+        success = await remove_user_from_workspace(
+            user_id=user_uuid,
+            workspace_id=workspace_id
+        )
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Error al remover el usuario del workspace",
+            )
+        return {
+            "message": "Usuario removido del workspace",
+            "user_id": user_id,
+            "workspace_id": str(workspace_id)
+        }
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="user_id inválido",
+        )
+    except Exception as e:
+        logger.error(f"Error removiendo miembro: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al remover el usuario del workspace",
+        )
