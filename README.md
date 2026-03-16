@@ -27,23 +27,27 @@ El detector de anomalías en logs es un sistema completo que combina algoritmos 
 ### 🏆 Características Destacadas
 
 - ✅ **Procesamiento de archivos grandes** (GB de logs)
-- ✅ **Modelo de IA configurable** (cualquier modelo de Ollama)
+- ✅ **Modelo de IA configurable** (cualquier modelo de Ollama Cloud)
 - ✅ **Interfaz web intuitiva** con drag & drop
 - ✅ **Análisis en tiempo real** con streaming de resultados
 - ✅ **Explicaciones en lenguaje natural** de las anomalías
 - ✅ **Historial persistente** de análisis
+- ✅ **Detalles de anomalías** con visualización por niveles de severidad
+- ✅ **Re-análisis de archivos** procesados anteriormente
+- ✅ **Gestión de proyectos** con workspaces y permisos RBAC
+- ✅ **Prevención de duplicados** mediante hash SHA-256
 - ✅ **Escalable** con Docker y microservicios
-- ✅ **Soporte GPU/CPU** para mejor rendimiento
 
 ### 📊 Stack Tecnológico
 
 | Componente | Tecnología | Versión | Propósito |
 |-----------|------------|--------|----------|
 | Frontend | Vue 3 + Vite | 3.3.0 | Interfaz de usuario |
-| UI Library | PrimeVue | 3.40.0 | Componentes UI |
-| Backend | FastAPI + Uvicorn | 0.104.1 | API REST |
-| ML Engine | Scikit-learn | 1.3.2 | Isolation Forest |
-| LLM Service | Ollama | 0.5.8 | Modelos de lenguaje |
+| UI Library | PrimeVue | 4.0.0 | Componentes UI |
+| Backend | FastAPI + Uvicorn | 0.115.0 | API REST |
+| ML Engine | Scikit-learn | 1.5.0 | Isolation Forest |
+| LLM Service | Ollama Cloud | - | Modelos de lenguaje |
+| Vector DB | Qdrant | latest | Embeddings semánticos |
 | Databases | MongoDB + PostgreSQL + Redis | 7.0 / 15 / 7.2 | Almacenamiento |
 | Proxy | Nginx | stable-alpine | Reverse proxy |
 | Containerization | Docker + Compose | - | Orquestación |
@@ -54,48 +58,55 @@ El sistema está compuesto por los siguientes servicios en contenedores Docker:
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│      Vue UI     │     │  FastAPI Server │     │  Ollama Service │
-│   (Frontend)    │────▶│(Anomaly Detect) │────▶│    (LLM)       │
+│      Vue UI     │     │  FastAPI Server │     │  Ollama Cloud   │
+│   (Frontend)    │────▶│(Anomaly Detect) │────▶│     (LLM)       │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
         ▲                       │                        │
-        │                       ▼                        │
-        │               ┌─────────────────┐              │
-        └───────────── │    Nginx        │              ▼
-                      │  (Proxy Server)  │     ┌─────────────────┐
-                      └─────────────────┘     │  Base de Datos   │
-                                             │  (MongoDB, etc.) │
-                                             └─────────────────┘
+        │                       ▼
+        │               ┌─────────────────┐
+        └───────────── │    Nginx        │
+                      │  (Proxy Server)  │
+                      └─────────────────┘
+                               │
+                ┌──────────────┼──────────────┐
+                ▼              ▼              ▼
+        ┌───────────┐  ┌─────────────┐  ┌─────────┐
+        │  MongoDB  │  │ PostgreSQL  │  │ Qdrant  │
+        │  (Logs)   │  │  (Auth/DB)  │  │(Vectors)│
+        └───────────┘  └─────────────┘  └─────────┘
 ```
 
 ### Componentes
 
 1. **Frontend (Vue3)**
    - Interfaz web para subida de archivos y visualización de resultados
-   - Manejo de archivos grandes mediante chunking
-   - Visualización en tiempo real del procesamiento
+   - Componentes PrimeVue para UI moderna
+   - Estado global con Pinia
    - Historial de análisis persistente
 
 2. **Backend (FastAPI)**
    - API REST para procesamiento de logs
    - Detección de anomalías usando Isolation Forest
-   - Integración con Ollama para explicaciones en lenguaje natural
-   - Procesamiento por chunks y streaming de resultados
+   - Integración con Ollama Cloud para explicaciones
+   - Streaming de resultados con Server-Sent Events
+   - Autenticación JWT y RBAC
 
-3. **LLM (Ollama)**
-   - Servicio local de LLM (modelo configurable)
-   - Por defecto usa Qwen 2.5 3B, pero se puede usar cualquier modelo compatible con Ollama
-   - Generación de explicaciones en lenguaje natural
-   - Procesamiento por lotes para optimización
+3. **LLM (Ollama Cloud)**
+   - Servicio en la nube para modelos de lenguaje
+   - Modelo configurable (por defecto: qwen2.5:3b)
+   - Explicaciones en lenguaje natural
+   - Procesamiento por lotes
 
 4. **Nginx**
    - Proxy inverso
-   - Manejo de archivos grandes
+   - Serve de archivos estáticos
    - Configuración para streaming
 
 5. **Bases de Datos**
-   - MongoDB: Almacenamiento de logs y reportes
-   - PostgreSQL: Gestión de usuarios y configuraciones
-   - Redis: Caché y gestión de colas de procesamiento
+   - MongoDB: Logs, chunks y resultados
+   - PostgreSQL: Usuarios, workspaces, proyectos
+   - Redis: Caché y pub/sub para streaming
+   - Qdrant: Embeddings semánticos
 
 ## Estructura de Directorios
 
@@ -104,46 +115,36 @@ logsanomaly/
 ├── build/                      # Dockerfiles y configuraciones
 │   ├── anomaly-detector/      # Servicio de detección
 │   │   └── Dockerfile         # Imagen del backend
-│   ├── ollama/               # Servicio LLM
-│   │   ├── Dockerfile         # Imagen de Ollama
-│   │   └── init-ollama.sh     # Script de inicialización
-│   ├── ui/                   # Frontend
-│   │   └── Dockerfile         # Imagen del frontend
-│   ├── mongodb/              # Configuración MongoDB
-│   │   └── init-mongo.js      # Script de inicialización
-│   └── redis/                # Configuración Redis
-│       └── redis.conf         # Archivo de configuración
+│   └── logs-analyze-ui/       # Frontend
+│       └── Dockerfile         # Imagen del frontend
 ├── data/                       # Código de la aplicación
 │   ├── backend-python/        # Backend (FastAPI)
 │   │   ├── main.py            # API principal
 │   │   ├── requirements.txt    # Dependencias Python
 │   │   ├── config/            # Configuraciones
-│   │   ├── scripts/           # Scripts auxiliares
-│   │   ├── chunks/            # Almacenamiento temporal
-│   │   └── reports/           # Reportes generados
+│   │   ├── models/            # Modelos de datos
+│   │   │   ├── base/         # Clases base
+│   │   │   ├── schemas/      # Pydantic schemas
+│   │   │   ├── orm/          # SQLAlchemy ORM
+│   │   │   └── factories/    # Conversiones ORM-API
+│   │   ├── routes/            # Endpoints API
+│   │   ├── services/          # Lógica de negocio
+│   │   ├── middleware/        # Middleware de autenticación
+│   │   └── debug/             # Scripts de prueba
 │   ├── frontend/              # Frontend (Vue3)
 │   │   ├── package.json       # Dependencias Node.js
 │   │   ├── src/
 │   │   │   ├── components/    # Componentes Vue
 │   │   │   ├── stores/        # Estado global (Pinia)
+│   │   │   ├── services/      # Servicios API
 │   │   │   └── utils/         # Utilidades
 │   │   └── dist/              # Archivos compilados
-│   ├── models/                # Modelos LLM descargados
-│   │   └── ollama/            # Modelos de Ollama
 │   └── static/                # Archivos estáticos servidos por Nginx
-├── db/                        # Scripts de bases de datos
-│   ├── init.sql              # Inicialización PostgreSQL
-│   └── init-mongo.js         # Inicialización MongoDB
 ├── doc/                       # Documentación
-│   ├── Arquitectura.MD
-│   ├── CONTEXT.md
-│   ├── FEATURES.md
 │   └── ...
 ├── server/                    # Configuraciones de servidor
 │   └── nginx/                 # Configuración Nginx
-│       ├── nginx.conf
-│       ├── conf.d/
-│       └── includes/
+│       └── conf.d/
 ├── docker-compose.yml          # Orquestación de servicios
 ├── env.template                # Template de variables de entorno
 └── README.md                   # Este archivo
@@ -211,29 +212,44 @@ logsanomaly/
 
 ## Características Clave
 
-1. **Procesamiento de Archivos Grandes**
-   - División en chunks de 500KB
-   - Procesamiento incremental
-   - Streaming de resultados
-   - Progreso en tiempo real
+### 1. Procesamiento de Archivos Grandes
+- División en chunks de 500KB
+- Procesamiento incremental
+- Streaming de resultados
+- Progreso en tiempo real
+- Detección de duplicados por hash SHA-256
 
-2. **Detección de Anomalías**
-   - Uso de Isolation Forest
-   - Features: longitud, entropía, palabras clave
-   - Scoring y clasificación
-   - Procesamiento paralelo
+### 2. Detección de Anomalías
+- Uso de Isolation Forest
+- Features: longitud, entropía, palabras clave
+- Scoring y clasificación
+- Procesamiento paralelo
+- Búsqueda semántica con embeddings
 
-3. **Explicaciones IA**
-   - Modelo local Nidum-Gemma-2B
-   - Procesamiento por lotes
-   - Prompts optimizados
-   - Respuestas estructuradas
+### 3. Explicaciones IA
+- Integración con Ollama Cloud
+- Modelos configurables (Qwen 2.5, Llama 3, etc.)
+- Procesamiento por lotes
+- Respuestas estructuradas
 
-4. **UI/UX**
-   - Carga de archivos con drag & drop
-   - Visualización en tiempo real
-   - Historial persistente
-   - Agrupación por archivos
+### 4. Visualización de Resultados
+- Vista de detalle de anomalías con acordeón
+- Clasificación por severidad (Crítica, Alta, Media, Baja)
+- Barra de progreso con score de anomalía
+- Paginación para grandes volúmenes
+- Log original formateado
+
+### 5. Gestión de Análisis
+- Re-análisis de archivos existentes
+- Eliminación de análisis completos
+- Historial persistente
+- Agrupación por proyectos
+
+### 6. Control de Acceso (RBAC)
+- Workspaces para separar entornos
+- Proyectos por workspace
+- Roles y permisos configurables
+- Autenticación JWT
 
 ## Ejemplos de Uso y Resultados
 
@@ -251,8 +267,29 @@ logsanomaly/
 2024-01-15 10:30:16 ERROR [AuthService] SQL injection attempt detected: admin' OR '1'='1
 2024-01-15 10:30:17 CRITICAL [SecurityService] Unauthorized access attempt to /admin/users
 ```
-**Resultado**: ⚠️ **Anomalía detectada** - Score: -0.85  
-**Explicación IA**: "Se detecta un posible ataque de fuerza bruta seguido de intento de inyección SQL y acceso no autorizado. Recomiendo bloquear la IP 192.168.1.100 y revisar los logs de seguridad."
+**Resultado**: ⚠️ **Anomalía detectada**
+- **Score**: -0.85
+- **Severidad**: Alta
+- **Explicación**: "Se detecta un posible ataque de fuerza bruta seguido de intento de inyección SQL y acceso no autorizado. Se recomienda bloquear la IP 192.168.1.100."
+
+### Visualización en la Interfaz
+
+Al hacer clic en una anomalía, se muestra:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 🔴 Anomalía #1                    [ALTA]                │
+├─────────────────────────────────────────────────────────┤
+│ Log detectado:                                          │
+│ 2024-01-15 10:30:15 ERROR [AuthService] Multiple        │
+│ failed login attempts from 192.168.1.100                │
+│                                                         │
+│ Explicación:                                            │
+│ Se detecta un posible ataque de fuerza bruta...         │
+│                                                         │
+│ Score de anomalía: ███████████████████░░░░ 85%          │
+└─────────────────────────────────────────────────────────┘
+```
 
 ### Demo en Vivo
 
@@ -283,6 +320,12 @@ Puede probar el sistema con archivos de ejemplo:
 git clone https://github.com/ctangarife/reto-ia-log-analyzer.git
 cd reto-ia-log-analyzer
 
+# Copiar template de variables de entorno
+cp env.template .env
+
+# Editar .env y agregar la API key de Ollama Cloud
+# OLLAMA_API_KEY=tu_api_key_aqui
+
 # Levantar los servicios
 docker-compose up -d
 ```
@@ -305,27 +348,25 @@ Acceda a la interfaz web a través de http://localhost:80
 
 ### Configuración del LLM (Modelo de Lenguaje)
 
-**El modelo de lenguaje es totalmente configurable y opcional**. Por defecto, el sistema usa `qwen2.5:3b`, pero puede configurar cualquier modelo compatible con Ollama.
+El sistema utiliza **Ollama Cloud** para generar explicaciones en lenguaje natural. Por defecto usa el modelo `qwen2.5:3b`, pero puede configurar cualquier modelo disponible en Ollama.
 
-Para cambiar el modelo, edite las siguientes líneas en el archivo `docker-compose.yml`:
+#### Variables de Entorno
 
-```yaml
-# En el servicio anomaly-detector (usar archivo .env)
-# OLLAMA_SERVICE_URL=http://ollama-service:11434
-# MODEL_NAME=qwen2.5:3b  # Cambie a su modelo preferido
+Edite el archivo `.env` para configurar el servicio LLM:
 
-# En el servicio ollama-service
-environment:
-  - OLLAMA_HOST=0.0.0.0
-  - OLLAMA_DEVICE=nvidia
-  - OLLAMA_MODEL=qwen2.5:3b  # Cambie a su modelo preferido
+```bash
+# Ollama Cloud Configuration
+OLLAMA_API_KEY=tu_api_key_aqui
+OLLAMA_URL=https://ollama.com
+OLLAMA_MODEL=qwen2.5:3b  # Modelo a utilizar
 ```
 
-Modelos recomendados:
-- `llama3:8b` - Mayor calidad pero requiere más recursos
+#### Modelos Recomendados
+
+- `qwen2.5:3b` - Ligero y rápido (recomendado)
+- `llama3:8b` - Mayor calidad pero más lento
 - `gemma:7b` - Buen balance calidad/rendimiento
-- `phi3:mini` - Modelo ligero para equipos con recursos limitados
-- Cualquier modelo compatible con Ollama
+- `phi3:mini` - Modelo muy ligero para recursos limitados
 
 ### Configuración del Sistema
 
@@ -366,79 +407,83 @@ Abra su navegador y vaya a http://localhost:80
 
 ### 2. Análisis de Logs
 
-1. **Subir Archivo**: Arrastre y suelte su archivo de logs o haga clic en el área de carga
-2. **Configuración de Análisis**: Establezca los parámetros según necesite
+1. **Seleccionar Proyecto**: Elija el workspace y proyecto donde desea trabajar
+2. **Subir Archivo**: Arrastre y suelte su archivo de logs o haga clic en el área de carga
 3. **Iniciar Análisis**: Haga clic en el botón "Analizar"
-4. **Ver Resultados**: Los resultados se mostrarán en tiempo real a medida que se procesan
+4. **Ver Progreso**: El progreso se muestra en tiempo real con porcentaje y estadísticas
+5. **Resultados**: Al completarse, verá el resumen con total de logs y anomalías detectadas
 
-### 3. Gestión de Reportes
+### 3. Visualización de Detalles
 
-- Los reportes se guardan automáticamente y están disponibles en la sección "Historial"
-- Cada reporte incluye estadísticas generales y detalles de las anomalías detectadas
-- Puede exportar los resultados en formato JSON o CSV
+Para ver el detalle de las anomalías detectadas:
+
+1. Vaya a la sección "Historia"
+2. Haga clic en el icono de ojo (👁) del análisis que desea revisar
+3. Se mostrará:
+   - **Resumen**: Total de logs, anomalías y porcentaje
+   - **Detalle de anomalías**: Lista expandible con cada anomalía
+   - **Información de cada anomalía**:
+     - Log original formateado
+     - Explicación en lenguaje natural
+     - Score de anomalía (barra de progreso)
+     - Nivel de severidad (Crítica, Alta, Media, Baja)
+
+### 4. Gestión de Análisis
+
+En el historial puede realizar las siguientes acciones:
+
+- **Ver detalles** (👁): Muestra el contenido completo de las anomalías
+- **Re-analizar** (🔄): Crea un nuevo análisis del mismo archivo
+- **Eliminar** (🗑): Elimina el análisis y todos sus datos
+
+### 5. Organización por Workspaces y Proyectos
+
+- **Workspaces**: Entornos separados (ej: Desarrollo, Producción)
+- **Proyectos**: Agrupaciones de análisis dentro de un workspace
+- **Permisos**: Control de acceso basado en roles (Viewer, Analyst, Admin)
 
 ## Modelos LLM Soportados
 
-El sistema es compatible con cualquier modelo disponible en Ollama. La elección del modelo dependerá del hardware disponible y la calidad deseada de las explicaciones.
+El sistema utiliza Ollama Cloud para generar explicaciones. El modelo se puede cambiar mediante la variable de entorno `OLLAMA_MODEL`.
 
-### ¿Cómo cambiar el modelo?
+### Modelos Disponibles
 
-1. **Opción 1**: Cambiar la variable de entorno en docker-compose.yml (como se explicó anteriormente)
+- `qwen2.5:3b` - Ligero y rápido (por defecto)
+- `llama3:8b` - Mayor calidad
+- `gemma:7b` - Buen balance
+- `phi3:mini` - Muy ligero
 
-2. **Opción 2**: Usar un modelo ya descargado
-   ```bash
-   # Primero descargar el modelo deseado
-   docker exec logs-analyze-ollama ollama pull llama3:8b
-   
-   # Luego editar docker-compose.yml y reiniciar los servicios
-   docker-compose down
-   docker-compose up -d
-   ```
+### Cambiar de Modelo
 
-3. **Opción 3**: Crear un modelo personalizado
-   ```bash
-   # Conectarse al contenedor de Ollama
-   docker exec -it logs-analyze-ollama bash
-   
-   # Crear un modelo personalizado
-   cat > /tmp/Modelfile << EOF
-   FROM llama3:8b
-   PARAMETER temperature 0.7
-   PARAMETER stop "User:"
-   PARAMETER stop "Assistant:"
-   EOF
-   
-   # Registrar el modelo
-   ollama create mi-modelo-personalizado -f /tmp/Modelfile
-   
-   # Salir del contenedor
-   exit
-   ```
-   Luego actualice las variables de entorno en docker-compose.yml con `MODEL_NAME=mi-modelo-personalizado`
+Edite el archivo `.env`:
+```bash
+OLLAMA_MODEL=llama3:8b
+```
 
-### Configuración Avanzada de Modelos
-
-Para configuraciones más detalladas, ejemplos específicos por hardware y scripts de automatización, consulte el documento [CONFIGURACION-MODELOS.md](./CONFIGURACION-MODELOS.md).
+Luego reinicie el backend:
+```bash
+docker-compose restart anomaly-detector
+```
 
 ## Limitaciones y Consideraciones
 
 1. **Rendimiento**
-   - Tamaño de chunk afecta memoria y velocidad
-   - LLM puede ser cuello de botella (especialmente sin GPU)
-   - Considerar batch size vs latencia
-   - Tiempo de descarga inicial del modelo puede ser significativo
+   - El tamaño de chunk afecta memoria y velocidad
+   - Ollama Cloud puede tener latencia de red
+   - Considerar batch size vs tiempo de respuesta
+   - El número de anomalías afecta el tiempo de explicación
 
 2. **Almacenamiento**
-   - Chunks y reportes ocupan espacio
-   - Modelos LLM pueden requerir varios GB de almacenamiento
-   - Implementar limpieza periódica
+   - Chunks y resultados ocupan espacio en MongoDB
+   - Los embeddings en Qdrant consumen memoria
+   - Implementar limpieza periódica de análisis antiguos
    - Monitorear uso de disco
 
 3. **Escalabilidad**
-   - Vertical: Aumentar recursos (especialmente RAM para modelos grandes)
-   - Horizontal: Múltiples workers
-   - Caché de LLM para respuestas comunes
+   - Vertical: Aumentar recursos (RAM y CPU)
+   - Horizontal: Múltiples workers de procesamiento
    - Considerar modelos más pequeños para mayor eficiencia
+   - Rate limiting de Ollama Cloud según plan contratado
 
 ## Solución de Problemas (FAQ)
 
@@ -497,29 +542,28 @@ docker-compose restart ollama-service
 
 ### Problemas de Configuración
 
-#### ¿Cómo usar el sistema sin GPU?
-**Configuración**:
-```yaml
-# Comentar o eliminar la sección de GPU en docker-compose.yml
-# deploy:
-#   resources:
-#     reservations:
-#       devices:
-#         - driver: nvidia
-#           count: all
-#           capabilities: [ gpu ]
-
-# Cambiar variables de entorno
-environment:
-  - OLLAMA_DEVICE=cpu
-  - MODEL_NAME=phi3:mini  # Usar modelo ligero
-```
+#### ¿Cómo obtener una API key de Ollama Cloud?
+1. Visite https://ollama.com
+2. Regístrese o inicie sesión
+3. Genere una API key en la sección de configuración
+4. Agréguela al archivo `.env` como `OLLAMA_API_KEY`
 
 #### ¿Cómo cambiar la base de datos?
-Por defecto usa MongoDB, PostgreSQL y Redis. Para usar solo una:
-```yaml
-# En docker-compose.yml, comentar los servicios no deseados
-# y ajustar las variables de entorno en el archivo .env
+Por defecto usa MongoDB, PostgreSQL, Redis y Qdrant. Para configurar conexiones personalizadas, edite el archivo `.env`:
+```bash
+# MongoDB
+MONGODB_URI=mongodb://admin:password@mongodb:27017/logsanomaly?authSource=admin
+
+# PostgreSQL
+POSTGRES_USER=anomaly_user
+POSTGRES_PASSWORD=your_password
+POSTGRES_DB=logsanomaly
+
+# Redis
+REDIS_URL=redis://redis:6379
+
+# Qdrant
+QDRANT_URL=http://qdrant:6333
 ```
 
 #### ¿Cómo ajustar la sensibilidad de detección?
@@ -597,47 +641,59 @@ Este proyecto está licenciado bajo la Licencia MIT. Consulte el archivo [LICENS
 - [ ] **API de integración**: Endpoints para sistemas externos
 - [ ] **Alertas en tiempo real**: Notificaciones por email/Slack
 - [ ] **Dashboard avanzado**: Métricas y gráficos detallados
-- [ ] **Modelos personalizados**: Entrenamiento con datos específicos
-- [ ] **Soporte multi-tenant**: Separación por organizaciones
 - [ ] **Exportación avanzada**: PDF, Excel, reportes programados
 - [ ] **Integración con SIEM**: Conectores para sistemas de seguridad
 - [ ] **Análisis predictivo**: Predicción de anomalías futuras
+- [ ] **Correlación de eventos**: Análisis multi-fuente
 
 ### 🗓️ Historial de Versiones
 
-- **v1.0.0** (Actual)
-  - Detección de anomalías con Isolation Forest
-  - Explicaciones con modelos LLM configurables
-  - Interfaz web completa con Vue 3
-  - Soporte para archivos grandes
-  - Múltiples bases de datos integradas
+#### v2.0.0 (Actual)
+- Visualización de detalles de anomalías con acordeón
+- Clasificación por severidad (Crítica, Alta, Media, Baja)
+- Paginación para grandes volúmenes de anomalías
+- Re-análisis de archivos existentes
+- Eliminación de análisis completos
+- Detección de duplicados por hash SHA-256
+- Control de acceso RBAC con workspaces y proyectos
+- Integración con Ollama Cloud
+- Búsqueda semántica con Qdrant
+
+#### v1.0.0
+- Detección de anomalías con Isolation Forest
+- Explicaciones con modelos LLM
+- Interfaz web con Vue 3
+- Soporte para archivos grandes
+- Múltiples bases de datos integradas
 
 ## Mejores Prácticas de Uso
 
 ### Para Análisis de Seguridad
-1. **Configurar alertas**: Establecer umbrales para anomalías críticas
-2. **Revisar regularmente**: Programar análisis automáticos
-3. **Correlacionar eventos**: Analizar patrones en ventanas de tiempo
-4. **Mantener contexto**: Incluir logs de múltiples fuentes
+1. **Organizar por proyectos**: Cree workspaces y proyectos separados por entorno
+2. **Revisar severidades**: Priorice anomalías con nivel "Crítico" y "Alto"
+3. **Usar re-análisis**: Para comparar cambios en el comportamiento
+4. **Mantener historial**: No elimine análisis antiguos para comparación temporal
 
 ### Para Optimización de Rendimiento
-1. **Ajustar chunk size**: Balancear memoria vs velocidad
-2. **Usar GPU cuando esté disponible**: Significativa mejora en LLM
-3. **Limpiar regularmente**: Eliminar archivos temporales antiguos
-4. **Monitorear recursos**: Verificar uso de CPU, RAM y almacenamiento
+1. **Limpiar datos antiguos**: Elimine análisis que ya no necesite
+2. **Ajustar parámetros**: Configure contaminación según sus necesidades
+3. **Monitorear recursos**: Verificar uso de CPU, RAM y almacenamiento
+4. **Usar paginación**: Para grandes volúmenes de anomalías
 
-### Para Desarrollo y Testing
-1. **Usar modelos ligeros**: `phi3:mini` para desarrollo rápido
-2. **Configurar logs detallados**: Para debugging efectivo
-3. **Probar con datos reales**: Validar con logs de producción
-4. **Documentar configuraciones**: Mantener registro de parámetros
+### Para Gestión de Equipos
+1. **Asignar roles**: Use roles apropiados (Viewer, Analyst, Admin)
+2. **Separar entornos**: Use workspaces para Desarrollo/Producción
+3. **Documentar proyectos**: Asigne nombres descriptivos a los proyectos
+4. **Revisar permisos**: Audite regularmente el acceso a los proyectos
 
 ## Agradecimientos
 
-- **Ollama** por proporcionar una excelente plataforma para modelos LLM locales
+- **Ollama** por proporcionar una plataforma excelente para modelos LLM
 - **FastAPI** por el framework web rápido y robusto
 - **Vue.js** por el framework frontend intuitivo
+- **PrimeVue** por los componentes UI de alta calidad
 - **Scikit-learn** por los algoritmos de machine learning
+- **Qdrant** por la base de datos de vectores
 - Comunidad de código abierto por las bibliotecas y herramientas
 
 ---
