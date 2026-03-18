@@ -275,13 +275,18 @@ class CourseRBACService:
     ) -> bool:
         """
         Check if user has a specific course permission.
-        Permission should be in format "learning:action" (e.g., "learning:create")
+        Permission format: "courses:action" or "learning:action" (e.g., "courses:create")
         """
         try:
             # Parse permission string
             parts = permission.split(":")
-            if len(parts) != 2 or parts[0] != "learning":
+            if len(parts) != 2:
                 logger.warning(f"Invalid permission format: {permission}")
+                return False
+
+            # Accept both "courses:" and "learning:" prefixes
+            if parts[0] not in ["courses", "learning"]:
+                logger.warning(f"Invalid permission prefix: {permission}")
                 return False
 
             action = parts[1]

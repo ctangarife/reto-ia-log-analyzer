@@ -38,7 +38,10 @@ export interface ExerciseQuestion {
 }
 
 export interface CourseProgress {
+  course_id?: string
+  course_name?: string
   project_id: string
+  workspace_id?: string
   user_id: string
   modules: CourseModule[]
   total_modules: number

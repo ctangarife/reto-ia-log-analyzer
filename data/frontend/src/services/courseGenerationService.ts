@@ -1,6 +1,11 @@
 /**
- * Course Generation Service
+ * Course Generation Service v2
  * Handles dynamic course generation and workflow
+ *
+ * New structure:
+ * - courses: Main entity with name, status, version
+ * - course_modules: Children of courses (4 fixed modules)
+ * - course_lessons: Children of modules
  */
 
 export interface CourseGenerateRequest {
@@ -14,6 +19,17 @@ export interface CourseGenerateResponse {
   modules_created: number
   lessons_created: number
   message: string
+}
+
+export interface CourseLimitsCheck {
+  can_create: boolean
+  reason?: string
+  current_counts: {
+    published: number
+    draft: number
+    pending: number
+    total: number
+  }
 }
 
 export interface ProjectAnalysis {
@@ -32,6 +48,7 @@ export interface ProjectAnalysis {
     type: string
     score: number
     log_entry: string
+    explanation: string
   }>
 }
 
@@ -41,10 +58,8 @@ export interface CoursePreviewResponse {
 }
 
 export interface CourseUpdateRequest {
-  title?: string
+  name?: string  // Changed from 'title'
   description?: string
-  status?: string
-  scope?: string
   change_description?: string
 }
 
@@ -60,17 +75,19 @@ export interface SubmitForReviewRequest {
 
 export interface ReviewActionRequest {
   comments?: string
+  archive_existing?: boolean  // For publish: whether to archive existing published course
 }
 
 export interface ReviewActionResponse {
   course_id: string
   status: string
   message: string
+  archived_course_id?: string  // Present if a course was archived during publish
 }
 
 export interface PendingCourse {
   id: string
-  title: string
+  name: string  // Changed from 'title'
   description: string
   status: string
   created_at: string
@@ -78,6 +95,9 @@ export interface PendingCourse {
   creator_email: string
   project_name: string
   project_id: string
+  module_count?: number
+  lesson_count?: number
+  version_number?: number
 }
 
 export interface PendingCoursesResponse {
@@ -97,17 +117,59 @@ export interface CourseRegenerateResponse {
   message: string
 }
 
+export interface CourseContent {
+  course: {
+    id: string
+    name: string  // Changed from 'title'
+    description: string
+    status: string
+    scope: string
+    version_number: number
+    created_at: string
+    project_id: string
+    workspace_id: string
+  }
+  modules: Array<{
+    id: string
+    module_order: number
+    title: string
+    description: string
+  }>
+  lessons: Array<{
+    id: string
+    module_id: string
+    lesson_order: number
+    title: string
+    content: string
+    exercise_data: any
+    is_dynamic: boolean
+    module_title: string
+    module_order: number
+  }>
+}
+
 class CourseGenerationService {
   private baseUrl = '/api/course-generation'
 
   /**
    * Check if a course can be generated for the project
    */
-  async canGenerate(projectId: string): Promise<{ can_generate: boolean; reason?: string }> {
+  async canGenerate(projectId: string): Promise<{ can_generate: boolean; reason?: string; current_counts?: any }> {
     const response = await fetch(`${this.baseUrl}/projects/${projectId}/can-generate`, {
       headers: this.getHeaders()
     })
     if (!response.ok) throw new Error('Failed to check if course can be generated')
+    return response.json()
+  }
+
+  /**
+   * Get course limits for a project
+   */
+  async getCourseLimits(projectId: string, targetStatus: string = 'draft'): Promise<CourseLimitsCheck> {
+    const response = await fetch(`${this.baseUrl}/projects/${projectId}/limits?target_status=${targetStatus}`, {
+      headers: this.getHeaders()
+    })
+    if (!response.ok) throw new Error('Failed to get course limits')
     return response.json()
   }
 
@@ -131,7 +193,10 @@ class CourseGenerationService {
       headers: this.getHeaders(),
       body: JSON.stringify(data)
     })
-    if (!response.ok) throw new Error('Failed to generate course')
+    if (!response.ok) {
+      const err = await response.json()
+      throw new Error(err.detail || 'Failed to generate course')
+    }
     return response.json()
   }
 
@@ -170,7 +235,10 @@ class CourseGenerationService {
       headers: this.getHeaders(),
       body: JSON.stringify(data || {})
     })
-    if (!response.ok) throw new Error('Failed to submit course for review')
+    if (!response.ok) {
+      const err = await response.json()
+      throw new Error(err.detail || 'Failed to submit course for review')
+    }
     return response.json()
   }
 
@@ -199,37 +267,7 @@ class CourseGenerationService {
   /**
    * Get course content with modules and lessons (for previewing draft courses)
    */
-  async getCourseContent(courseId: string): Promise<{
-    course: {
-      id: string
-      title: string
-      description: string
-      status: string
-      scope: string
-      module_order: number
-      created_at: string
-      project_id: string | null
-      workspace_id: string | null
-    }
-    modules: Array<{
-      id: string
-      module_order: number
-      title: string
-      description: string
-      status: string
-    }>
-    lessons: Array<{
-      id: string
-      module_id: string
-      lesson_order: number
-      title: string
-      content: string
-      exercise_data: any
-      is_dynamic: boolean
-      module_title: string
-      module_order: number
-    }>
-  }> {
+  async getCourseContent(courseId: string): Promise<CourseContent> {
     const response = await fetch(`${this.baseUrl}/courses/${courseId}/content`, {
       headers: this.getHeaders()
     })
@@ -245,7 +283,10 @@ class CourseGenerationService {
       method: 'DELETE',
       headers: this.getHeaders()
     })
-    if (!response.ok) throw new Error('Failed to delete course')
+    if (!response.ok) {
+      const err = await response.json()
+      throw new Error(err.detail || 'Failed to delete course')
+    }
     return response.json()
   }
 
@@ -277,13 +318,18 @@ class CourseGenerationService {
 
   /**
    * Publish a course
+   * If archive_existing is true, will archive any existing published course first
    */
-  async publishCourse(courseId: string): Promise<ReviewActionResponse> {
+  async publishCourse(courseId: string, archiveExisting: boolean = false): Promise<ReviewActionResponse> {
     const response = await fetch(`${this.baseUrl}/courses/${courseId}/publish`, {
       method: 'POST',
-      headers: this.getHeaders()
+      headers: this.getHeaders(),
+      body: JSON.stringify({ archive_existing: archiveExisting })
     })
-    if (!response.ok) throw new Error('Failed to publish course')
+    if (!response.ok) {
+      const err = await response.json()
+      throw new Error(err.detail || 'Failed to publish course')
+    }
     return response.json()
   }
 
@@ -296,6 +342,28 @@ class CourseGenerationService {
       headers: this.getHeaders()
     })
     if (!response.ok) throw new Error('Failed to archive course')
+    return response.json()
+  }
+
+  /**
+   * Get approved courses (ready to publish)
+   */
+  async getApprovedCourses(workspaceId: string): Promise<PendingCoursesResponse> {
+    const response = await fetch(`${this.baseUrl}/workspaces/${workspaceId}/courses/approved`, {
+      headers: this.getHeaders()
+    })
+    if (!response.ok) throw new Error('Failed to get approved courses')
+    return response.json()
+  }
+
+  /**
+   * Get published courses
+   */
+  async getPublishedCourses(workspaceId: string): Promise<PendingCoursesResponse> {
+    const response = await fetch(`${this.baseUrl}/workspaces/${workspaceId}/courses/published`, {
+      headers: this.getHeaders()
+    })
+    if (!response.ok) throw new Error('Failed to get published courses')
     return response.json()
   }
 

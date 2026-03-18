@@ -1,11 +1,17 @@
 """
-Course Generation Routes
+Course Generation Routes v2
 API endpoints for dynamic course generation and workflow
+
+New structure:
+- courses table: Main course entity
+- course_modules: Children of courses (4 fixed modules)
+- course_lessons: Children of modules
 """
 from fastapi import APIRouter, HTTPException, Depends
 from uuid import UUID
+from typing import Optional
 
-from middleware.auth_middleware import get_current_user, CurrentUser
+from middleware.auth_middleware import get_current_user, get_current_user_optional, CurrentUser
 from services.course_generation_service import course_generation_service
 from models.learning_models import (
     CourseGenerateRequest, CourseGenerateResponse,
@@ -13,7 +19,7 @@ from models.learning_models import (
     CourseUpdateRequest, CourseUpdateResponse,
     SubmitForReviewRequest, ReviewActionRequest, ReviewActionResponse,
     PendingCoursesResponse, CourseRegenerateRequest, CourseRegenerateResponse,
-    LessonRefreshRequest, LessonRefreshResponse
+    CourseResponse, CourseListItem, CourseLimitsCheck
 )
 from services.course_rbac_service import course_rbac_service
 from config.database import db_manager
@@ -27,7 +33,6 @@ async def _check_course_permission(
     permission: str
 ) -> bool:
     """Helper to check course permission for a project"""
-    # Get workspace_id from project
     async with db_manager.postgres_pool.acquire() as conn:
         workspace_id = await conn.fetchval(
             "SELECT workspace_id FROM auth.projects WHERE id = $1",
@@ -42,6 +47,15 @@ async def _check_course_permission(
     )
 
 
+async def _get_workspace_from_project(project_id: UUID) -> Optional[UUID]:
+    """Get workspace_id from a project"""
+    async with db_manager.postgres_pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT workspace_id FROM auth.projects WHERE id = $1",
+            project_id
+        )
+
+
 # ============================================
 # Course Generation Endpoints
 # ============================================
@@ -53,14 +67,36 @@ async def check_can_generate(
 ):
     """Check if a course can be generated for the project"""
     try:
-        # Check permission using course RBAC
+        # Check permission
         has_perm = await _check_course_permission(
-            current_user.user_id, project_id, "learning:create"
+            current_user.user_id, project_id, "courses:create"
         )
         if not has_perm and not current_user.is_super_admin:
             raise HTTPException(status_code=403, detail="No permission to create courses")
 
         return await course_generation_service.can_generate_course(project_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/projects/{project_id}/limits")
+async def get_course_limits(
+    project_id: UUID,
+    target_status: str = "draft",
+    current_user = Depends(get_current_user)
+):
+    """Get current course counts and limits for a project"""
+    try:
+        # Check permission
+        has_perm = await _check_course_permission(
+            current_user.user_id, project_id, "courses:create"
+        )
+        if not has_perm and not current_user.is_super_admin:
+            raise HTTPException(status_code=403, detail="No permission to create courses")
+
+        return await course_generation_service.check_course_limits(project_id, target_status)
     except HTTPException:
         raise
     except Exception as e:
@@ -74,29 +110,22 @@ async def preview_course(
 ):
     """Preview project data before generating course"""
     try:
-        # Check permission using course RBAC
+        # Check permission
         has_perm = await _check_course_permission(
-            current_user.user_id, project_id, "learning:create"
+            current_user.user_id, project_id, "courses:create"
         )
         if not has_perm and not current_user.is_super_admin:
             raise HTTPException(status_code=403, detail="No permission to create courses")
-
-        # Get workspace_id
-        async with db_manager.postgres_pool.acquire() as conn:
-            workspace_id = await conn.fetchval(
-                "SELECT workspace_id FROM auth.projects WHERE id = $1",
-                project_id
-            )
 
         analysis = await course_generation_service.preview_course_data(project_id)
 
         return CoursePreviewResponse(
             analysis=analysis,
             suggested_modules=[
-                "Módulo 1: Contexto del Proyecto (dinámico)",
-                "Módulo 2: Tipos de Anomalías detectadas",
-                "Módulo 3: Análisis Práctico con anomalías reales",
-                "Módulo 4: Evaluación Final"
+                "Módulo 1: Introducción a los Logs (2 lecciones sobre logs en general)",
+                "Módulo 2: Tipos de Anomalías Detectadas (teoría + ejemplos por categoría)",
+                "Módulo 3: Análisis Práctico (casos reales con anomalías del proyecto)",
+                "Módulo 4: Evaluación Final (examen práctico)"
             ]
         )
     except HTTPException:
@@ -113,27 +142,25 @@ async def generate_course(
 ):
     """Generate a new course for the project"""
     try:
-        # Check permission using course RBAC
+        # Check permission
         has_perm = await _check_course_permission(
-            current_user.user_id, project_id, "learning:create"
+            current_user.user_id, project_id, "courses:create"
         )
         if not has_perm and not current_user.is_super_admin:
             raise HTTPException(status_code=403, detail="No permission to create courses")
 
         # Get workspace_id
-        async with db_manager.postgres_pool.acquire() as conn:
-            workspace_id = await conn.fetchval(
-                "SELECT workspace_id FROM auth.projects WHERE id = $1",
-                project_id
-            )
+        workspace_id = await _get_workspace_from_project(project_id)
+        if not workspace_id:
+            raise HTTPException(status_code=404, detail="Project not found")
 
-            # Verify workspace scope permission
-            if data.scope == "workspace":
-                has_ws_perm = await course_rbac_service.check_course_permission(
-                    current_user.user_id, workspace_id, "learning:create"
-                )
-                if not has_ws_perm and not current_user.is_super_admin:
-                    raise HTTPException(status_code=403, detail="No permission to create workspace courses")
+        # Verify workspace scope permission
+        if data.scope == "workspace":
+            has_ws_perm = await course_rbac_service.check_course_permission(
+                current_user.user_id, workspace_id, "courses:create"
+            )
+            if not has_ws_perm and not current_user.is_super_admin:
+                raise HTTPException(status_code=403, detail="No permission to create workspace courses")
 
         result = await course_generation_service.generate_course(
             project_id, workspace_id, current_user.user_id, data.scope, data.name
@@ -155,19 +182,17 @@ async def regenerate_course(
 ):
     """Regenerate course with new project data (creates new version)"""
     try:
-        # Check permission using course RBAC
+        # Check permission
         has_perm = await _check_course_permission(
-            current_user.user_id, project_id, "learning:create"
+            current_user.user_id, project_id, "courses:create"
         )
         if not has_perm and not current_user.is_super_admin:
             raise HTTPException(status_code=403, detail="No permission to create courses")
 
         # Get workspace_id
-        async with db_manager.postgres_pool.acquire() as conn:
-            workspace_id = await conn.fetchval(
-                "SELECT workspace_id FROM auth.projects WHERE id = $1",
-                project_id
-            )
+        workspace_id = await _get_workspace_from_project(project_id)
+        if not workspace_id:
+            raise HTTPException(status_code=404, detail="Project not found")
 
         result = await course_generation_service.regenerate_course(
             project_id, workspace_id, current_user.user_id, data.change_description
@@ -191,28 +216,28 @@ async def update_course(
     data: CourseUpdateRequest,
     current_user = Depends(get_current_user)
 ):
-    """Update a course"""
+    """Update a course (name, description)"""
     try:
         async with db_manager.postgres_pool.acquire() as conn:
             # Get course
             course = await conn.fetchrow(
-                "SELECT * FROM learning.course_modules WHERE id = $1",
+                "SELECT * FROM learning.courses WHERE id = $1",
                 course_id
             )
 
             if not course:
                 raise HTTPException(status_code=404, detail="Course not found")
 
-            # Check permission using course RBAC
+            # Check permission
             workspace_id = course["workspace_id"]
 
             if course["created_by"] == current_user.user_id:
                 has_perm = await course_rbac_service.check_course_permission(
-                    current_user.user_id, workspace_id, "learning:edit_own"
+                    current_user.user_id, workspace_id, "courses:edit_own"
                 )
             else:
                 has_perm = await course_rbac_service.check_course_permission(
-                    current_user.user_id, workspace_id, "learning:edit"
+                    current_user.user_id, workspace_id, "courses:edit"
                 )
 
             if not has_perm and not current_user.is_super_admin:
@@ -223,19 +248,14 @@ async def update_course(
             values = []
             param_count = 1
 
-            if data.title is not None:
-                updates.append(f"title = ${param_count}")
-                values.append(data.title)
+            if data.name is not None:
+                updates.append(f"name = ${param_count}")
+                values.append(data.name)
                 param_count += 1
 
             if data.description is not None:
                 updates.append(f"description = ${param_count}")
                 values.append(data.description)
-                param_count += 1
-
-            if data.status is not None:
-                updates.append(f"status = ${param_count}")
-                values.append(data.status)
                 param_count += 1
 
             if data.change_description is not None:
@@ -246,7 +266,7 @@ async def update_course(
             if updates:
                 values.append(course_id)
                 await conn.execute(
-                    f"UPDATE learning.course_modules SET {', '.join(updates)} WHERE id = ${param_count}",
+                    f"UPDATE learning.courses SET {', '.join(updates)} WHERE id = ${param_count}",
                     *values
                 )
 
@@ -273,25 +293,35 @@ async def submit_for_review(
         async with db_manager.postgres_pool.acquire() as conn:
             # Get course
             course = await conn.fetchrow(
-                "SELECT * FROM learning.course_modules WHERE id = $1",
+                "SELECT * FROM learning.courses WHERE id = $1",
                 course_id
             )
 
             if not course:
                 raise HTTPException(status_code=404, detail="Course not found")
 
-            # Check permission using course RBAC (creator or editor can submit)
+            # Check permission (creator or editor can submit)
             workspace_id = course["workspace_id"]
             if course["created_by"] != current_user.user_id:
                 has_perm = await course_rbac_service.check_course_permission(
-                    current_user.user_id, workspace_id, "learning:edit_own"
+                    current_user.user_id, workspace_id, "courses:edit_own"
                 )
                 if not has_perm and not current_user.is_super_admin:
                     raise HTTPException(status_code=403, detail="No permission to submit this course")
 
+            # Check limits for pending courses
+            limits = await course_generation_service.check_course_limits(
+                course["project_id"], "pending"
+            )
+            if not limits.can_create:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"No se puede enviar para revisión: {limits.reason}"
+                )
+
             # Update status to pending
             await conn.execute(
-                """UPDATE learning.course_modules
+                """UPDATE learning.courses
                    SET status = 'pending'
                    WHERE id = $1""",
                 course_id
@@ -307,7 +337,7 @@ async def submit_for_review(
                    JOIN auth.roles r ON r.id = ur.role_id
                    JOIN auth.role_permissions rp ON rp.role_id = r.id
                    JOIN auth.permissions p ON p.id = rp.permission_id
-                   WHERE p.permission_name = 'learning:review'
+                   WHERE p.permission_name = 'courses:review'
                    AND u.workspace_id = $1""",
                 course["workspace_id"], course_id
             )
@@ -331,28 +361,26 @@ async def get_pending_courses(
 ):
     """Get pending courses for review"""
     try:
-        # Check review permission using course RBAC
+        # Check review permission
         has_perm = await course_rbac_service.check_course_permission(
-            current_user.user_id, workspace_id, "learning:review"
+            current_user.user_id, workspace_id, "courses:review"
         )
         if not has_perm and not current_user.is_super_admin:
             raise HTTPException(status_code=403, detail="No permission to review courses")
 
         async with db_manager.postgres_pool.acquire() as conn:
-            # Reviewers only see courses that are in 'pending' status
-            # (courses that have been submitted for review)
             courses = await conn.fetch("""
                 SELECT
-                    cm.id, cm.title, cm.description, cm.status,
-                    cm.created_at, cm.created_by,
+                    c.id, c.name, c.description, c.status,
+                    c.created_at, c.created_by, c.version_number,
                     u.email as creator_email,
                     p.name as project_name
-                FROM learning.course_modules cm
-                LEFT JOIN auth.users u ON u.id = cm.created_by
-                LEFT JOIN auth.projects p ON p.id = cm.project_id
-                WHERE cm.status = 'pending'
-                AND cm.workspace_id = $1
-                ORDER BY cm.created_at DESC
+                FROM learning.courses c
+                LEFT JOIN auth.users u ON u.id = c.created_by
+                LEFT JOIN auth.projects p ON p.id = c.project_id
+                WHERE c.status = 'pending'
+                AND c.workspace_id = $1
+                ORDER BY c.created_at DESC
             """, workspace_id)
 
             return PendingCoursesResponse(
@@ -371,30 +399,28 @@ async def get_draft_courses(
     workspace_id: UUID,
     current_user = Depends(get_current_user)
 ):
-    """Get draft courses for the current user (creator view)"""
+    """Get draft courses for the current user"""
     try:
         async with db_manager.postgres_pool.acquire() as conn:
-            # Show ONLY parent courses (no parent_id) created by the current user
-            # Include module/lesson counts
+            # Show courses created by the current user with module/lesson counts
             courses = await conn.fetch("""
                 SELECT
-                    cm.id, cm.title, cm.description, cm.status,
-                    cm.created_at, cm.created_by,
+                    c.id, c.name, c.description, c.status,
+                    c.created_at, c.created_by,
                     u.email as creator_email,
                     p.name as project_name,
-                    COUNT(DISTINCT child_modules.id) as module_count,
-                    COUNT(DISTINCT child_lessons.id) as lesson_count
-                FROM learning.course_modules cm
-                LEFT JOIN auth.users u ON u.id = cm.created_by
-                LEFT JOIN auth.projects p ON p.id = cm.project_id
-                LEFT JOIN learning.course_modules child_modules ON child_modules.parent_id = cm.id
-                LEFT JOIN learning.course_lessons child_lessons ON child_lessons.module_id = child_modules.id
-                WHERE cm.status = 'draft'
-                AND cm.workspace_id = $1
-                AND cm.created_by = $2
-                AND cm.parent_id IS NULL
-                GROUP BY cm.id, cm.title, cm.description, cm.status, cm.created_at, cm.created_by, u.email, p.name
-                ORDER BY cm.created_at DESC
+                    COUNT(DISTINCT m.id) as module_count,
+                    COUNT(DISTINCT l.id) as lesson_count
+                FROM learning.courses c
+                LEFT JOIN auth.users u ON u.id = c.created_by
+                LEFT JOIN auth.projects p ON p.id = c.project_id
+                LEFT JOIN learning.course_modules m ON m.course_id = c.id
+                LEFT JOIN learning.course_lessons l ON l.module_id = m.id
+                WHERE c.status = 'draft'
+                AND c.workspace_id = $1
+                AND c.created_by = $2
+                GROUP BY c.id, c.name, c.description, c.status, c.created_at, c.created_by, u.email, p.name
+                ORDER BY c.created_at DESC
             """, workspace_id, current_user.user_id)
 
             return PendingCoursesResponse(
@@ -413,29 +439,29 @@ async def get_course_content(
     course_id: UUID,
     current_user = Depends(get_current_user)
 ):
-    """Get course content with modules and lessons (for previewing draft courses)"""
+    """Get course content with modules and lessons"""
     try:
         async with db_manager.postgres_pool.acquire() as conn:
-            # Get course info (parent course)
+            # Get course info
             course = await conn.fetchrow(
-                "SELECT * FROM learning.course_modules WHERE id = $1",
+                "SELECT * FROM learning.courses WHERE id = $1",
                 course_id
             )
 
             if not course:
                 raise HTTPException(status_code=404, detail="Course not found")
 
-            # Get child modules
-            child_modules = await conn.fetch("""
-                SELECT id, module_order, title, description, status
+            # Get modules
+            modules = await conn.fetch("""
+                SELECT id, module_order, title, description
                 FROM learning.course_modules
-                WHERE parent_id = $1
+                WHERE course_id = $1
                 ORDER BY module_order
             """, course_id)
 
-            # Get all lessons for all child modules - simpler approach without dynamic IN clause
+            # Get all lessons
             lessons = []
-            for module in child_modules:
+            for module in modules:
                 module_lessons = await conn.fetch("""
                     SELECT
                         l.id, l.module_id, l.lesson_order, l.title, l.content,
@@ -451,22 +477,21 @@ async def get_course_content(
             return {
                 "course": {
                     "id": str(course["id"]),
-                    "title": course["title"],
+                    "name": course["name"],
                     "description": course["description"],
                     "status": course["status"],
                     "scope": course["scope"],
-                    "module_order": course["module_order"],
+                    "version_number": course["version_number"],
                     "created_at": str(course["created_at"]),
-                    "project_id": str(course["project_id"]) if course["project_id"] else None,
-                    "workspace_id": str(course["workspace_id"]) if course["workspace_id"] else None
+                    "project_id": str(course["project_id"]),
+                    "workspace_id": str(course["workspace_id"])
                 },
                 "modules": [{
                     "id": str(m["id"]),
                     "module_order": m["module_order"],
                     "title": m["title"],
-                    "description": m["description"],
-                    "status": m["status"]
-                } for m in child_modules],
+                    "description": m["description"]
+                } for m in modules],
                 "lessons": [{
                     "id": str(l["id"]),
                     "module_id": str(l["module_id"]),
@@ -492,31 +517,49 @@ async def approve_course(
     data: ReviewActionRequest,
     current_user = Depends(get_current_user)
 ):
-    """Approve a course"""
+    """Approve and publish a course"""
     try:
         async with db_manager.postgres_pool.acquire() as conn:
             # Get course
             course = await conn.fetchrow(
-                "SELECT * FROM learning.course_modules WHERE id = $1",
+                "SELECT * FROM learning.courses WHERE id = $1",
                 course_id
             )
 
             if not course:
                 raise HTTPException(status_code=404, detail="Course not found")
 
-            # Check review permission using course RBAC
+            # Check review permission
             has_perm = await course_rbac_service.check_course_permission(
-                current_user.user_id, course["workspace_id"], "learning:review"
+                current_user.user_id, course["workspace_id"], "courses:review"
             )
             if not has_perm and not current_user.is_super_admin:
                 raise HTTPException(status_code=403, detail="No permission to review courses")
 
-            # Update status
+            # Archive existing published course for this project (if any)
+            existing_published = await conn.fetchrow(
+                """SELECT id FROM learning.courses
+                   WHERE project_id = $1 AND status = 'published' AND id != $2""",
+                course["project_id"], course_id
+            )
+
+            archived_course_id = None
+            if existing_published:
+                await conn.execute(
+                    """UPDATE learning.courses
+                       SET status = 'archived', archived_at = CURRENT_TIMESTAMP
+                       WHERE id = $1""",
+                    existing_published["id"]
+                )
+                archived_course_id = str(existing_published["id"])
+
+            # Update status to published directly
             await conn.execute(
-                """UPDATE learning.course_modules
-                   SET status = 'approved',
+                """UPDATE learning.courses
+                   SET status = 'published',
                        reviewed_by = $1,
-                       reviewed_at = CURRENT_TIMESTAMP
+                       reviewed_at = CURRENT_TIMESTAMP,
+                       published_at = CURRENT_TIMESTAMP
                    WHERE id = $2""",
                 current_user.user_id, course_id
             )
@@ -529,10 +572,15 @@ async def approve_course(
                 course_id, current_user.user_id, data.comments, course["version_number"]
             )
 
+        message = "Curso aprobado y publicado."
+        if archived_course_id:
+            message += f" Curso anterior archivado."
+
         return ReviewActionResponse(
             course_id=course_id,
-            status="approved",
-            message="Curso aprobado. Listo para publicar."
+            status="published",
+            message=message,
+            archived_course_id=archived_course_id
         )
 
     except HTTPException:
@@ -552,23 +600,23 @@ async def reject_course(
         async with db_manager.postgres_pool.acquire() as conn:
             # Get course
             course = await conn.fetchrow(
-                "SELECT * FROM learning.course_modules WHERE id = $1",
+                "SELECT * FROM learning.courses WHERE id = $1",
                 course_id
             )
 
             if not course:
                 raise HTTPException(status_code=404, detail="Course not found")
 
-            # Check review permission using course RBAC
+            # Check review permission
             has_perm = await course_rbac_service.check_course_permission(
-                current_user.user_id, course["workspace_id"], "learning:review"
+                current_user.user_id, course["workspace_id"], "courses:review"
             )
             if not has_perm and not current_user.is_super_admin:
                 raise HTTPException(status_code=403, detail="No permission to review courses")
 
             # Update status back to draft
             await conn.execute(
-                """UPDATE learning.course_modules
+                """UPDATE learning.courses
                    SET status = 'draft',
                        reviewed_by = $1,
                        reviewed_at = CURRENT_TIMESTAMP,
@@ -600,23 +648,24 @@ async def reject_course(
 @router.post("/courses/{course_id}/publish", response_model=ReviewActionResponse)
 async def publish_course(
     course_id: UUID,
+    data: ReviewActionRequest,
     current_user = Depends(get_current_user)
 ):
-    """Publish a course"""
+    """Publish a course. If another course is already published, archive it first."""
     try:
         async with db_manager.postgres_pool.acquire() as conn:
             # Get course
             course = await conn.fetchrow(
-                "SELECT * FROM learning.course_modules WHERE id = $1",
+                "SELECT * FROM learning.courses WHERE id = $1",
                 course_id
             )
 
             if not course:
                 raise HTTPException(status_code=404, detail="Course not found")
 
-            # Check if approved or user has publish permission using course RBAC
+            # Check if approved or user has publish permission
             can_publish = await course_rbac_service.check_course_permission(
-                current_user.user_id, course["workspace_id"], "learning:publish"
+                current_user.user_id, course["workspace_id"], "courses:publish"
             )
 
             if course["status"] != "approved" and not can_publish and not current_user.is_super_admin:
@@ -625,22 +674,47 @@ async def publish_course(
                     detail="Course must be approved first or you need publish permission"
                 )
 
-            # Update status
+            # Check for existing published course
+            existing_published = await conn.fetchrow(
+                """SELECT id, name FROM learning.courses
+                   WHERE project_id = $1 AND status = 'published' AND id != $2""",
+                course["project_id"], course_id
+            )
+
+            archived_course_id = None
+            if existing_published:
+                if not data.archive_existing and not can_publish:
+                    # Ask user what to do (return special response)
+                    return ReviewActionResponse(
+                        course_id=course_id,
+                        status="conflict",
+                        message=f"Ya existe un curso publicado: '{existing_published['name']}'. "
+                               f"Especifica archive_existing=true para archivarlo automáticamente."
+                    )
+                else:
+                    # Archive existing published course
+                    await conn.execute(
+                        """UPDATE learning.courses
+                           SET status = 'archived', archived_at = CURRENT_TIMESTAMP
+                           WHERE id = $1""",
+                        existing_published["id"]
+                    )
+                    archived_course_id = existing_published["id"]
+
+            # Publish the new course
             await conn.execute(
-                """UPDATE learning.course_modules
-                   SET status = 'published',
-                       published_at = CURRENT_TIMESTAMP
+                """UPDATE learning.courses
+                   SET status = 'published', published_at = CURRENT_TIMESTAMP
                    WHERE id = $1""",
                 course_id
             )
 
-            # Notify users in workspace
-            # (would be implemented with notification service)
-
         return ReviewActionResponse(
             course_id=course_id,
             status="published",
-            message="Curso publicado. Ahora visible para los usuarios."
+            message="Curso publicado. Ahora visible para los usuarios." +
+                   (f" Curso anterior archivado." if archived_course_id else ""),
+            archived_course_id=archived_course_id
         )
 
     except HTTPException:
@@ -659,25 +733,24 @@ async def archive_course(
         async with db_manager.postgres_pool.acquire() as conn:
             # Get course
             course = await conn.fetchrow(
-                "SELECT * FROM learning.course_modules WHERE id = $1",
+                "SELECT * FROM learning.courses WHERE id = $1",
                 course_id
             )
 
             if not course:
                 raise HTTPException(status_code=404, detail="Course not found")
 
-            # Check permission using course RBAC
+            # Check permission
             has_perm = await course_rbac_service.check_course_permission(
-                current_user.user_id, course["workspace_id"], "learning:delete"
+                current_user.user_id, course["workspace_id"], "courses:delete"
             )
             if not has_perm and not current_user.is_super_admin:
                 raise HTTPException(status_code=403, detail="No permission to archive courses")
 
             # Update status
             await conn.execute(
-                """UPDATE learning.course_modules
-                   SET status = 'archived',
-                       archived_at = CURRENT_TIMESTAMP
+                """UPDATE learning.courses
+                   SET status = 'archived', archived_at = CURRENT_TIMESTAMP
                    WHERE id = $1""",
                 course_id
             )
@@ -686,50 +759,6 @@ async def archive_course(
             course_id=course_id,
             status="archived",
             message="Curso archivado."
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/lessons/{lesson_id}/refresh", response_model=LessonRefreshResponse)
-async def refresh_lesson(
-    lesson_id: UUID,
-    data: LessonRefreshRequest,
-    current_user = Depends(get_current_user)
-):
-    """Refresh lesson content with new anomalies"""
-    try:
-        async with db_manager.postgres_pool.acquire() as conn:
-            # Get lesson and project
-            lesson = await conn.fetchrow(
-                """SELECT l.id, l.module_id, cm.project_id, cm.workspace_id
-                   FROM learning.course_lessons l
-                   JOIN learning.course_modules cm ON cm.id = l.module_id
-                   WHERE l.id = $1""",
-                lesson_id
-            )
-
-            if not lesson:
-                raise HTTPException(status_code=404, detail="Lesson not found")
-
-            # Check permission using course RBAC
-            has_perm = await course_rbac_service.check_course_permission(
-                current_user.user_id, lesson["workspace_id"], "learning:edit"
-            )
-            if not has_perm and not current_user.is_super_admin:
-                raise HTTPException(status_code=403, detail="No permission to edit lessons")
-
-        result = await course_generation_service.refresh_lesson(
-            lesson_id, lesson["project_id"], data.preserve_selection
-        )
-
-        return LessonRefreshResponse(
-            lesson_id=lesson_id,
-            message=result["message"],
-            anomalies_updated=0  # Would be calculated from actual refresh
         )
 
     except HTTPException:
@@ -748,16 +777,16 @@ async def delete_course(
         async with db_manager.postgres_pool.acquire() as conn:
             # Get course info
             course = await conn.fetchrow(
-                """SELECT cm.id, cm.status, cm.workspace_id, cm.project_id, cm.created_by
-                   FROM learning.course_modules cm
-                   WHERE cm.id = $1""",
+                """SELECT c.id, c.status, c.workspace_id, c.project_id, c.created_by
+                   FROM learning.courses c
+                   WHERE c.id = $1""",
                 course_id
             )
 
             if not course:
                 raise HTTPException(status_code=404, detail="Curso no encontrado")
 
-            # Only allow deleting draft/pending courses (not published)
+            # Only allow deleting draft/pending courses
             if course["status"] == "published":
                 raise HTTPException(
                     status_code=400,
@@ -767,16 +796,15 @@ async def delete_course(
             # Check permission (creator or super admin)
             is_creator = str(course["created_by"]) == str(current_user.user_id)
             if not is_creator and not current_user.is_super_admin:
-                # Also check workspace admin permission
                 has_perm = await course_rbac_service.check_course_permission(
-                    current_user.user_id, course["workspace_id"], "learning:delete"
+                    current_user.user_id, course["workspace_id"], "courses:delete"
                 )
                 if not has_perm:
                     raise HTTPException(status_code=403, detail="No tienes permiso para eliminar este curso")
 
-            # Delete course (CASCADE will delete lessons)
+            # Delete course (CASCADE will delete modules and lessons)
             await conn.execute(
-                "DELETE FROM learning.course_modules WHERE id = $1",
+                "DELETE FROM learning.courses WHERE id = $1",
                 course_id
             )
 
@@ -787,5 +815,120 @@ async def delete_course(
 
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/workspaces/{workspace_id}/courses/approved", response_model=PendingCoursesResponse)
+async def get_approved_courses(
+    workspace_id: UUID,
+    current_user = Depends(get_current_user_optional)
+):
+    """Get approved courses (ready to publish) in a workspace"""
+    try:
+        async with db_manager.postgres_pool.acquire() as conn:
+            courses = await conn.fetch("""
+                SELECT
+                    c.id,
+                    c.name,
+                    c.description,
+                    c.status,
+                    c.created_at,
+                    c.reviewed_at,
+                    c.reviewed_by,
+                    u.email as reviewer_email,
+                    c.project_id,
+                    p.name as project_name,
+                    COUNT(DISTINCT m.id) as module_count,
+                    COUNT(DISTINCT l.id) as lesson_count
+                FROM learning.courses c
+                JOIN auth.projects p ON c.project_id = p.id
+                LEFT JOIN auth.users u ON c.reviewed_by = u.id
+                LEFT JOIN learning.course_modules m ON m.course_id = c.id
+                LEFT JOIN learning.course_lessons l ON l.module_id = m.id
+                WHERE c.workspace_id = $1
+                AND c.status = 'approved'
+                GROUP BY c.id, c.name, c.description, c.status, c.created_at, c.reviewed_at, c.reviewed_by, u.email, c.project_id, p.name
+                ORDER BY c.reviewed_at DESC
+            """, workspace_id)
+
+            return PendingCoursesResponse(
+                workspace_id=workspace_id,
+                courses=[{
+                    "id": str(row["id"]),
+                    "name": row["name"],
+                    "description": row["description"] or "",
+                    "status": row["status"],
+                    "created_at": str(row["created_at"]),
+                    "created_by": "",  # Not needed for approved courses
+                    "creator_email": "",
+                    "reviewed_at": str(row["reviewed_at"]) if row["reviewed_at"] else None,
+                    "reviewed_by": str(row["reviewed_by"]) if row["reviewed_by"] else None,
+                    "reviewer_email": row["reviewer_email"] or "",
+                    "project_id": str(row["project_id"]),
+                    "project_name": row["project_name"],
+                    "module_count": row["module_count"],
+                    "lesson_count": row["lesson_count"]
+                } for row in courses]
+            )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/workspaces/{workspace_id}/courses/published", response_model=PendingCoursesResponse)
+async def get_published_courses(
+    workspace_id: UUID,
+    current_user = Depends(get_current_user_optional)
+):
+    """Get published courses in a workspace"""
+    try:
+        async with db_manager.postgres_pool.acquire() as conn:
+            courses = await conn.fetch("""
+                SELECT
+                    c.id,
+                    c.name,
+                    c.description,
+                    c.status,
+                    c.created_at,
+                    c.published_at,
+                    c.project_id,
+                    p.name as project_name,
+                    COUNT(DISTINCT m.id) as module_count,
+                    COUNT(DISTINCT l.id) as lesson_count,
+                    COALESCE(SUM(CASE WHEN lp.user_id IS NOT NULL THEN 1 ELSE 0 END), 0) as completed_lessons
+                FROM learning.courses c
+                JOIN auth.projects p ON c.project_id = p.id
+                LEFT JOIN learning.course_modules m ON m.course_id = c.id
+                LEFT JOIN learning.course_lessons l ON l.module_id = m.id
+                LEFT JOIN learning.lesson_progress lp ON lp.lesson_id = l.id AND lp.user_id = $2
+                WHERE c.workspace_id = $1
+                AND c.status = 'published'
+                GROUP BY c.id, c.name, c.description, c.status, c.created_at, c.published_at, c.project_id, p.name
+                ORDER BY c.published_at DESC
+            """, workspace_id, current_user.user_id if current_user else None)
+
+            return PendingCoursesResponse(
+                workspace_id=workspace_id,
+                courses=[{
+                    "id": str(row["id"]),
+                    "name": row["name"],
+                    "description": row["description"] or "",
+                    "status": row["status"],
+                    "created_at": str(row["created_at"]),
+                    "created_by": "",
+                    "creator_email": "",
+                    "reviewed_at": "",
+                    "reviewed_by": "",
+                    "reviewer_email": "",
+                    "project_id": str(row["project_id"]),
+                    "project_name": row["project_name"],
+                    "module_count": row["module_count"],
+                    "lesson_count": row["lesson_count"],
+                    "published_at": str(row["published_at"]) if row["published_at"] else None,
+                    "completed_lessons": row["completed_lessons"]
+                } for row in courses]
+            )
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

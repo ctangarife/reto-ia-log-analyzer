@@ -57,7 +57,7 @@
 
       <!-- Modules and Lessons -->
       <Accordion v-model:activeIndex="activeModule" multiple>
-        <AccordionPanel v-for="module in progressData.modules" :key="module.id">
+        <AccordionTab v-for="module in progressData.modules" :key="module.id">
           <template #header>
             <div class="flex justify-content-between align-items-center w-full">
               <div>
@@ -102,7 +102,7 @@
               </Column>
             </DataTable>
           </div>
-        </AccordionPanel>
+        </AccordionTab>
       </Accordion>
 
       <!-- Certificate Section (if completed) -->
@@ -161,7 +161,7 @@
 import { ref, computed } from 'vue'
 import Card from 'primevue/card'
 import Accordion from 'primevue/accordion'
-import AccordionPanel from 'primevue/accordionpanel'
+import AccordionTab from 'primevue/accordiontab'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Button from 'primevue/button'

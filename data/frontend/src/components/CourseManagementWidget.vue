@@ -24,7 +24,7 @@
           <div v-for="course in draftCourses" :key="course.id" class="course-item p-3">
             <div class="flex justify-content-between align-items-start">
               <div class="flex-1">
-                <h4>{{ course.title }}</h4>
+                <h4>{{ course.name }}</h4>
                 <p class="text-color-secondary text-sm">
                   Proyecto: {{ course.project_name }}
                 </p>
@@ -74,6 +74,100 @@
       class="mb-3"
     />
 
+    <!-- Approved Courses Panel (ready to publish) -->
+    <Card v-if="workspaceId && approvedCourses.length > 0" class="mb-3">
+      <template #title>
+        <div class="flex align-items-center gap-2">
+          <i class="pi pi-check-circle"></i>
+          <span>Aprobados</span>
+          <Badge :value="approvedCourses.length" severity="info" />
+        </div>
+      </template>
+      <template #content>
+        <div class="course-list">
+          <div v-for="course in approvedCourses" :key="course.id" class="course-item p-3">
+            <div class="flex justify-content-between align-items-start">
+              <div class="flex-1">
+                <div class="flex align-items-center gap-2">
+                  <h4>{{ course.name }}</h4>
+                  <Badge value="Aprobado" severity="info" />
+                </div>
+                <p class="text-color-secondary text-sm">
+                  Proyecto: {{ course.project_name }}
+                </p>
+                <p class="text-sm mt-2">{{ course.description }}</p>
+                <small class="text-color-secondary">
+                  Aprobado: {{ formatDate(course.reviewed_at) }}
+                </small>
+              </div>
+              <div class="flex gap-2">
+                <Button
+                  icon="pi pi-eye"
+                  label="Ver"
+                  severity="secondary"
+                  outlined
+                  @click="viewCourse(course)"
+                  size="small"
+                />
+                <Button
+                  icon="pi pi-upload"
+                  label="Publicar"
+                  severity="success"
+                  @click="publishCourse(course)"
+                  size="small"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+    </Card>
+
+    <!-- Published Courses Panel -->
+    <Card v-if="workspaceId && publishedCourses.length > 0" class="mb-3">
+      <template #title>
+        <div class="flex align-items-center gap-2">
+          <i class="pi pi-bookmark"></i>
+          <span>Publicados</span>
+          <Badge :value="publishedCourses.length" severity="success" />
+        </div>
+      </template>
+      <template #content>
+        <div class="course-list">
+          <div v-for="course in publishedCourses" :key="course.id" class="course-item p-3">
+            <div class="flex justify-content-between align-items-start">
+              <div class="flex-1">
+                <div class="flex align-items-center gap-2">
+                  <h4>{{ course.name }}</h4>
+                  <Badge value="Publicado" severity="success" />
+                </div>
+                <p class="text-color-secondary text-sm">
+                  Proyecto: {{ course.project_name }}
+                </p>
+                <div class="flex gap-2 mt-1">
+                  <Badge :value="`${course.module_count || 0} módulos`" severity="secondary" />
+                  <Badge :value="`${course.lesson_count || 0} lecciones`" severity="info" />
+                </div>
+                <small class="text-color-secondary">
+                  Publicado: {{ formatDate(course.published_at) }}
+                </small>
+              </div>
+              <div class="flex gap-2">
+                <Button
+                  icon="pi pi-eye"
+                  label="Ver Contenido"
+                  severity="secondary"
+                  outlined
+                  @click="viewCourse(course)"
+                  size="small"
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+    </Card>
+
     <!-- Generate Dialog -->
     <CourseGenerateDialog
       ref="generateDialog"
@@ -97,7 +191,7 @@
       </div>
       <div v-else-if="courseContent" class="course-content">
         <div class="course-header mb-3">
-          <h3>{{ courseContent.course.title }}</h3>
+          <h3>{{ courseContent.course.name }}</h3>
           <p class="text-color-secondary">{{ courseContent.course.description }}</p>
           <div class="flex gap-2 mt-2">
             <Badge :value="courseContent.course.status" :severity="getStatusSeverity(courseContent.course.status)" />
@@ -110,8 +204,8 @@
         <!-- Modules with Lessons in Accordion -->
         <div v-if="courseContent.modules.length > 0" class="modules-section">
           <h4>Módulos del Curso</h4>
-          <Accordion v-model:activeIndex="activeModuleIndex">
-            <AccordionPanel v-for="module in courseContent.modules" :key="module.id">
+          <Accordion v-model:activeIndex="activeModuleIndex" multiple>
+            <AccordionTab v-for="module in courseContent.modules" :key="module.id">
               <template #header>
                 <div class="flex justify-content-between align-items-center w-full">
                   <div>
@@ -153,7 +247,7 @@
                   </Column>
                 </DataTable>
               </div>
-            </AccordionPanel>
+            </AccordionTab>
           </Accordion>
         </div>
         <div v-else class="text-center p-4 text-color-secondary">
@@ -191,7 +285,7 @@ import Card from 'primevue/card'
 import Badge from 'primevue/badge'
 import Dialog from 'primevue/dialog'
 import Accordion from 'primevue/accordion'
-import AccordionPanel from 'primevue/accordion'
+import AccordionTab from 'primevue/accordiontab'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Chip from 'primevue/chip'
@@ -202,7 +296,7 @@ import CourseGenerateDialog from './CourseGenerateDialog.vue'
 import CourseReviewPanel from './CourseReviewPanel.vue'
 import CourseRoleManager from './CourseRoleManager.vue'
 import { useToast } from 'primevue/usetoast'
-import { courseGenerationService } from '@/services/courseGenerationService'
+import { courseGenerationService, type CourseContent } from '@/services/courseGenerationService'
 
 interface Props {
   projectId?: string
@@ -212,43 +306,14 @@ interface Props {
 
 interface DraftCourse {
   id: string
-  title: string
+  name: string  // Changed from 'title' to match backend v2
   description: string
   status: string
   created_at: string
   project_name: string
-}
-
-interface CourseContent {
-  course: {
-    id: string
-    title: string
-    description: string
-    status: string
-    scope: string
-    module_order: number
-    created_at: string
-    project_id: string | null
-    workspace_id: string | null
-  }
-  modules: Array<{
-    id: string
-    module_order: number
-    title: string
-    description: string
-    status: string
-  }>
-  lessons: Array<{
-    id: string
-    module_id: string
-    lesson_order: number
-    title: string
-    content: string
-    exercise_data: any
-    is_dynamic: boolean
-    module_title: string
-    module_order: number
-  }>
+  module_count?: number
+  lesson_count?: number
+  version_number?: number
 }
 
 const props = defineProps<Props>()
@@ -263,6 +328,8 @@ const generateDialog = ref()
 const roleManagerDialog = ref()
 const loading = ref(false)
 const draftCourses = ref<DraftCourse[]>([])
+const approvedCourses = ref<DraftCourse[]>([])
+const publishedCourses = ref<DraftCourse[]>([])
 
 // Course preview dialog
 const showContentDialog = ref(false)
@@ -288,14 +355,52 @@ const loadDraftCourses = async () => {
   }
 }
 
+const loadApprovedCourses = async () => {
+  if (!props.workspaceId) return
+
+  try {
+    const response = await courseGenerationService.getApprovedCourses(props.workspaceId)
+    approvedCourses.value = response.courses
+  } catch (e: any) {
+    console.error('Error loading approved courses:', e)
+  }
+}
+
+const loadPublishedCourses = async () => {
+  if (!props.workspaceId) return
+
+  try {
+    const response = await courseGenerationService.getPublishedCourses(props.workspaceId)
+    publishedCourses.value = response.courses
+  } catch (e: any) {
+    console.error('Error loading published courses:', e)
+  }
+}
+
+const publishCourse = async (course: DraftCourse) => {
+  try {
+    await courseGenerationService.publishCourse(course.id, true) // archive existing
+    toast.add({ severity: 'success', summary: 'Éxito', detail: 'Curso publicado', life: 3000 })
+    await loadApprovedCourses()
+    await loadPublishedCourses()
+  } catch (e: any) {
+    toast.add({ severity: 'error', summary: 'Error', detail: e.message || 'Error al publicar curso', life: 3000 })
+  }
+}
+
 const viewCourse = async (course: DraftCourse) => {
   showContentDialog.value = true
   loadingContent.value = true
   courseContent.value = null
 
   try {
-    courseContent.value = await courseGenerationService.getCourseContent(course.id)
+    const content = await courseGenerationService.getCourseContent(course.id)
+    console.log('Course content loaded:', content)
+    console.log('Modules count:', content?.modules?.length)
+    console.log('Lessons count:', content?.lessons?.length)
+    courseContent.value = content
   } catch (e: any) {
+    console.error('Error loading course content:', e)
     toast.add({ severity: 'error', summary: 'Error', detail: 'Error al cargar contenido del curso', life: 3000 })
     showContentDialog.value = false
   } finally {
@@ -310,12 +415,16 @@ const previewLesson = (lesson: CourseContent['lessons'][0]) => {
 
 const getModuleLessonCount = (moduleId: string) => {
   if (!courseContent.value) return 0
-  return courseContent.value.lessons.filter(l => l.module_id === moduleId).length
+  const count = courseContent.value.lessons.filter(l => l.module_id === moduleId).length
+  console.log(`Module ${moduleId} has ${count} lessons`)
+  return count
 }
 
 const getModuleLessons = (moduleId: string) => {
   if (!courseContent.value) return []
-  return courseContent.value.lessons.filter(l => l.module_id === moduleId)
+  const lessons = courseContent.value.lessons.filter(l => l.module_id === moduleId)
+  console.log(`Getting lessons for module ${moduleId}:`, lessons)
+  return lessons
 }
 
 const renderMarkdown = (content: string) => {
@@ -350,7 +459,7 @@ const submitForReview = async (course: DraftCourse) => {
 }
 
 const deleteCourse = async (course: DraftCourse) => {
-  if (!confirm(`¿Estás seguro de eliminar el curso "${course.title}"?`)) return
+  if (!confirm(`¿Estás seguro de eliminar el curso "${course.name}"?`)) return
 
   try {
     await courseGenerationService.deleteCourse(course.id)
@@ -385,9 +494,12 @@ const onCourseGenerated = async () => {
 }
 
 const onCourseActioned = () => {
-  // Course was approved/rejected
+  // Course was approved/rejected/published
   toast.add({ severity: 'success', summary: 'Éxito', detail: 'Acción completada', life: 3000 })
-  // Reload pending courses is handled by CourseReviewPanel
+  // Reload all course lists
+  loadDraftCourses()
+  loadApprovedCourses()
+  loadPublishedCourses()
 }
 
 const onRoleAssigned = () => {
@@ -402,12 +514,16 @@ const onRoleRemoved = () => {
 watch(() => props.workspaceId, () => {
   if (props.workspaceId) {
     loadDraftCourses()
+    loadApprovedCourses()
+    loadPublishedCourses()
   }
 }, { immediate: true })
 
 onMounted(() => {
   if (props.workspaceId) {
     loadDraftCourses()
+    loadApprovedCourses()
+    loadPublishedCourses()
   }
 })
 

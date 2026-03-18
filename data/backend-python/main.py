@@ -470,6 +470,157 @@ async def migrate_learning_schema():
         logger.error(f"Error migrando esquema learning: {e}")
         raise HTTPException(status_code=500, detail=f"Error al migrar el esquema: {str(e)}")
 
+@app.post("/admin/migrate-v2-courses-table")
+async def migrate_v2_courses_table():
+    """
+    Migración v2: Crea la nueva tabla 'courses' separada de 'course_modules'.
+
+    Nueva estructura:
+    - courses: Entidad principal del curso (estado, versión, etc.)
+    - course_modules: Hijos de courses (4 módulos fijos por curso)
+    - course_lessons: Hijos de course_modules (lecciones por módulo)
+
+    Esta migración es necesaria para usar el nuevo sistema de generación de cursos.
+    """
+    try:
+        async with db_manager.postgres_pool.acquire() as conn:
+            # Verificar si el schema learning existe
+            schema_exists = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = 'learning')"
+            )
+
+            if not schema_exists:
+                raise HTTPException(
+                    status_code=404,
+                    detail="El esquema learning no existe. Ejecuta primero POST /admin/init-learning-schema"
+                )
+
+            # Verificar si la tabla courses ya existe
+            courses_table_exists = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema = 'learning' AND table_name = 'courses')"
+            )
+
+            if courses_table_exists:
+                # Verificar si tiene la columna course_id en course_modules
+                has_course_id = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema = 'learning' AND table_name = 'course_modules' AND column_name = 'course_id')"
+                )
+
+                if has_course_id:
+                    return {
+                        "status": "already_migrated",
+                        "message": "La migración v2 ya está aplicada. La tabla courses existe y course_modules tiene course_id."
+                    }
+                else:
+                    # Agregar course_id a course_modules
+                    logger.info("Agregando course_id a course_modules...")
+                    await conn.execute("ALTER TABLE learning.course_modules ADD COLUMN IF NOT EXISTS course_id UUID")
+
+                    # Crear índice
+                    await conn.execute("CREATE INDEX IF NOT EXISTS idx_course_modules_course ON learning.course_modules(course_id)")
+
+                    return {
+                        "status": "updated",
+                        "message": "Se agregó course_id a course_modules. La tabla courses ya existía."
+                    }
+
+            # Crear la tabla courses
+            logger.info("Creando tabla courses...")
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS learning.courses (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    project_id UUID NOT NULL,
+                    workspace_id UUID NOT NULL,
+                    name VARCHAR(255) NOT NULL,
+                    description TEXT,
+                    status VARCHAR(20) DEFAULT 'draft',
+                    scope VARCHAR(20) DEFAULT 'project',
+                    version_number INT DEFAULT 1,
+                    created_by UUID NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    reviewed_by UUID,
+                    reviewed_at TIMESTAMP,
+                    published_at TIMESTAMP,
+                    archived_at TIMESTAMP,
+                    rejection_reason TEXT,
+                    change_description TEXT
+                )
+            """)
+
+            # Agregar course_id a course_modules
+            await conn.execute("ALTER TABLE learning.course_modules ADD COLUMN IF NOT EXISTS course_id UUID")
+
+            # Crear índices
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_courses_project ON learning.courses(project_id, status)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_courses_workspace ON learning.courses(workspace_id, status)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_course_modules_course ON learning.course_modules(course_id)")
+
+            # Crear función para validar límites de cursos
+            await conn.execute("""
+                CREATE OR REPLACE FUNCTION learning.validate_course_limits(
+                    p_project_id UUID,
+                    p_workspace_id UUID,
+                    p_status VARCHAR
+                ) RETURNS TABLE (
+                    can_create BOOLEAN,
+                    reason TEXT,
+                    current_counts JSONB
+                ) AS $$
+                DECLARE
+                    published_count INT;
+                    draft_count INT;
+                    pending_count INT;
+                BEGIN
+                    SELECT COUNT(*) INTO published_count
+                    FROM learning.courses
+                    WHERE project_id = p_project_id AND status = 'published';
+
+                    SELECT COUNT(*) INTO draft_count
+                    FROM learning.courses
+                    WHERE project_id = p_project_id AND status = 'draft';
+
+                    SELECT COUNT(*) INTO pending_count
+                    FROM learning.courses
+                    WHERE project_id = p_project_id AND status = 'pending';
+
+                    IF p_status = 'published' AND published_count >= 1 THEN
+                        RETURN QUERY SELECT FALSE, 'Ya existe un curso publicado', jsonb_build_object(
+                            'published', published_count, 'draft', draft_count, 'pending', pending_count
+                        );
+                    ELSIF p_status = 'draft' AND draft_count >= 3 THEN
+                        RETURN QUERY SELECT FALSE, 'Máximo de 3 cursos en borrador', jsonb_build_object(
+                            'published', published_count, 'draft', draft_count, 'pending', pending_count
+                        );
+                    ELSIF p_status = 'pending' AND pending_count >= 3 THEN
+                        RETURN QUERY SELECT FALSE, 'Máximo de 3 cursos pendientes', jsonb_build_object(
+                            'published', published_count, 'draft', draft_count, 'pending', pending_count
+                        );
+                    ELSE
+                        RETURN QUERY SELECT TRUE, 'Límites válidos', jsonb_build_object(
+                            'published', published_count, 'draft', draft_count, 'pending', pending_count
+                        );
+                    END IF;
+                END;
+                $$ LANGUAGE plpgsql;
+            """)
+
+            # Otorgar permisos
+            await conn.execute("GRANT ALL PRIVILEGES ON TABLE learning.courses TO anomaly_user")
+            await conn.execute("GRANT EXECUTE ON FUNCTION learning.validate_course_limits TO anomaly_user")
+
+            logger.info("✅ Migración v2 completada correctamente")
+
+            return {
+                "status": "success",
+                "message": "Migración v2 completada. Nueva tabla courses creada con estructura separada de módulos."
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error en migración v2: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al migrar: {str(e)}")
+
 @app.post("/process", response_model=ProcessResponseV2)
 async def process_file(
     file: UploadFile = File(...),

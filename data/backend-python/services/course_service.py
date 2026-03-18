@@ -22,296 +22,30 @@ logger = logging.getLogger(__name__)
 class CourseService:
     """Service for managing course content and progress"""
 
-    # Course content definitions (static)
-    MODULES = [
-        {
-            "order": 1,
-            "title": "Introducción a los Logs",
-            "description": "Aprende qué son los logs y por qué son importantes para la seguridad",
-            "lessons": [
-                {
-                    "order": 1,
-                    "title": "¿Qué son los Logs?",
-                    "content": """
-# ¿Qué son los Logs?
-
-Los **logs** (o registros) son archivos que almacenan eventos ocurridos en un sistema informático. Piénsalos como el "diario" de una computadora.
-
-## ¿Por Qué son Importantes?
-
-Los logs son crucibles para:
-
-- 🔍 **Seguridad:** Revelan ataques e intrusiones
-- 🛠️ **Troubleshooting:** Ayudan a diagnosticar problemas
-- 📋 **Cumplimiento:** Muchas leyes requieren guardar registros
-- 📖 **Auditoría:** Permiten reconstruir qué sucedió
-
-## Tipos Comunes de Logs
-
-| Tipo | Propósito | Ejemplo |
-|------|-----------|---------|
-| **Aplicación** | Eventos de software | "Usuario inició sesión" |
-| **Sistema** | Eventos del SO | "Servicio reiniciado" |
-| **Seguridad** | Accesos y alertas | "Intento fallido de login" |
-| **Red** | Conexiones y tráfico | "Conexión TCP establecida" |
-"""
-                },
-                {
-                    "order": 2,
-                    "title": "Quiz: Conceptos Básicos",
-                    "content": "Responde las siguientes preguntas para reforzar lo aprendido.",
-                    "exercise": {
-                        "type": "quiz",
-                        "questions": [
-                            {
-                                "id": "q1",
-                                "question": "¿Cuál es el propósito principal de los logs de seguridad?",
-                                "options": [
-                                    "Decorar el servidor",
-                                    "Registrar eventos de seguridad para detección de intrusiones",
-                                    "Hacer que el servidor sea más lento"
-                                ],
-                                "correct": 1
-                            },
-                            {
-                                "id": "q2",
-                                "question": "¿Qué tipo de log registraría 'Connection timeout'?",
-                                "options": ["Log de aplicación", "Log de errores", "Ambos pueden registrar esto"],
-                                "correct": 2
-                            }
-                        ]
-                    }
-                }
-            ]
-        },
-        {
-            "order": 2,
-            "title": "Anatomía de un Log",
-            "description": "Aprende a leer e interpretar la estructura de un log",
-            "lessons": [
-                {
-                    "order": 1,
-                    "title": "Estructura Básica",
-                    "content": """
-# Estructura de un Log
-
-Un log típicamente tiene esta estructura:
-
-```
-[FECHA HORA] [NIVEL] [COMPONENTE] Mensaje descriptivo
-```
-
-## Ejemplo Desglosado
-
-```
-2024-03-15 10:30:15 ERROR [AuthService] Multiple failed login attempts from 192.168.1.100
-│        │        │     │           │                                     │
-│        │        │     │           └── Componente que generó el log    │
-│        │        │     └────────────────── Severidad del evento         │
-│        │        └────────────────────────── Hora del evento            │
-│        └────────────────────────────────── Fecha del evento           │
-└────────────────────────────────────────────── Marca de tiempo completa
-```
-
-## Niveles de Severidad
-
-```
-DEBUG   → Información para desarrolladores
-INFO    → Eventos normales de operación
-WARN    → Algo inusual, pero no crítico
-ERROR   → Algo falló, pero el sistema sigue funcionando
-FATAL   → Algo falló gravemente
-```
-"""
-                },
-                {
-                    "order": 2,
-                    "title": "Ejercicio: Analiza este Log",
-                    "content": "Analiza el siguiente log y responde las preguntas.",
-                    "exercise": {
-                        "type": "analysis",
-                        "log": "[2024-03-15 14:23:17] [ERROR] [DatabaseService] Connection timeout after 30s: jdbc:postgresql://db1.prod:5432/users",
-                        "questions": [
-                            {
-                                "id": "q1",
-                                "question": "¿A qué hora ocurrió el evento?",
-                                "options": ["14:23:17", "2024-03-15", "15:23:17"],
-                                "correct": 0
-                            },
-                            {
-                                "id": "q2",
-                                "question": "¿Qué componente generó el log?",
-                                "options": ["ERROR", "DatabaseService", "jdbc"],
-                                "correct": 1
-                            },
-                            {
-                                "id": "q3",
-                                "question": "¿Cuál es el problema?",
-                                "options": [
-                                    "Login fallido",
-                                    "Timeout de conexión a base de datos",
-                                    "Servidor caído"
-                                ],
-                                "correct": 1
-                            }
-                        ]
-                    }
-                }
-            ]
-        },
-        {
-            "order": 3,
-            "title": "¿Qué es una Anomalía?",
-            "description": "Entiende qué es una anomalía y por qué son importantes",
-            "lessons": [
-                {
-                    "order": 1,
-                    "title": "Definición y Tipos",
-                    "content": """
-# ¿Qué es una Anomalía?
-
-Una **anomalía** es un patrón en los logs que se desvía del comportamiento normal o esperado.
-
-## Analogía
-
-Imagina que eres un guardia de seguridad:
-
-- **Normal:** Empleado entra a las 9 AM con credencial
-- **Anómalo:** Desconocido entra a las 3 AM sin credencial
-
-## Tipos de Anomalías
-
-### 🔴 Anomalías de Seguridad
-- Múltiples intentos de login fallidos
-- Conexiones a IPs maliciosas
-- Comandos de inyección SQL
-
-### 🟡 Anomalías de Operación
-- Spike en errores 500
-- Tiempo de respuesta excesivo
-- Conexiones fallidas masivas
-
-### 🟠 Anomalías de Comportamiento
-- Acceso a horas inusuales
-- Transferencia de archivos inusualmente grande
-"""
-                }
-            ]
-        },
-        {
-            "order": 4,
-            "title": "Interpretación con Logs del Proyecto",
-            "description": "Analiza anomalías reales detectadas en tu proyecto",
-            "lessons": [
-                {
-                    "order": 1,
-                    "title": "Análisis de Anomalías Detectadas",
-                    "content": """
-# Análisis de Anomalías de tu Proyecto
-
-A continuación verás anomalías reales detectadas por LogsAnomaly en este proyecto.
-
-## Instrucciones
-
-1. Revisa cada anomalía presentada
-2. Lee el log original
-3. Lee la explicación del LLM
-4. Interpreta el score y severidad
-5. Completa el ejercicio de comprensión
-""",
-                    "exercise": {
-                        "type": "project_anomalies",
-                        "dynamic": True  # Will load actual project anomalies
-                    }
-                }
-            ]
-        },
-        {
-            "order": 5,
-            "title": "Caso Práctico Dinámico",
-            "description": "Ejercicio final con logs seleccionados de tu proyecto",
-            "lessons": [
-                {
-                    "order": 1,
-                    "title": "Evaluación Práctica",
-                    "content": """
-# Evaluación Práctica
-
-Analiza las siguientes anomalías de tu proyecto y demuestra tu comprensión.
-
-## Instrucciones
-
-1. Selecciona la respuesta correcta para cada anomalía
-2. Necesitas al menos 70% de respuestas correctas para aprobar
-3. Al completar, obtendrás tu insignia
-""",
-                    "exercise": {
-                        "type": "final_exam",
-                        "dynamic": True,
-                        "passing_score": 70
-                    }
-                }
-            ]
-        }
-    ]
-
-    async def initialize_course_for_project(self, project_id: UUID, user_id: UUID = None, workspace_id: UUID = None) -> None:
-        """Initialize course modules and lessons for a project"""
-        try:
-            async with db_manager.postgres_pool.acquire() as conn:
-                # Check if course already exists
-                existing = await conn.fetchval(
-                    "SELECT COUNT(*) FROM learning.course_modules WHERE project_id = $1",
-                    project_id
-                )
-                if existing > 0:
-                    return  # Already initialized
-
-                # Insert modules and lessons
-                for module_data in self.MODULES:
-                    module_id = await conn.fetchval("""
-                        INSERT INTO learning.course_modules (project_id, workspace_id, module_order, title, description, created_by)
-                        VALUES ($1, $2, $3, $4, $5, $6)
-                        RETURNING id
-                    """, project_id, workspace_id, module_data["order"], module_data["title"], module_data.get("description"), user_id)
-
-                    for lesson_data in module_data["lessons"]:
-                        exercise_data = lesson_data.get("exercise")
-                        await conn.execute("""
-                            INSERT INTO learning.course_lessons (module_id, lesson_order, title, content, exercise_data)
-                            VALUES ($1, $2, $3, $4, $5)
-                        """, module_id, lesson_data["order"], lesson_data["title"], lesson_data["content"],
-                            json.dumps(exercise_data) if exercise_data else None)  # Convert dict to JSON string
-
-                logger.info(f"Course initialized for project {project_id}")
-
-        except Exception as e:
-            logger.error(f"Error initializing course: {e}")
-            raise
-
     async def get_workspace_courses(self, user_id: UUID, workspace_id: UUID) -> list:
-        """Get all courses (from all projects) in a workspace for a user"""
+        """Get all published courses (from all projects) in a workspace for a user"""
         try:
             async with db_manager.postgres_pool.acquire() as conn:
-                # Get courses from all projects in the workspace
+                # Get published courses from all projects in the workspace (NEW structure)
                 courses = await conn.fetch("""
                     SELECT
                         p.id as project_id,
                         p.name as project_name,
-                        cm.id as course_id,
-                        cm.title,
-                        cm.description,
-                        COUNT(cl.id) as total_lessons,
+                        c.id as course_id,
+                        c.name as title,  -- courses table has 'name', not 'title'
+                        c.description,
+                        COUNT(DISTINCT l.id) as total_lessons,
                         COALESCE(SUM(CASE WHEN lp.user_id = $2 AND lp.completed_at IS NOT NULL THEN 1 ELSE 0 END), 0) as completed_lessons,
                         COALESCE(MAX(cc.badge_earned), false) as is_completed
                     FROM auth.projects p
-                    JOIN learning.course_modules cm ON cm.project_id = p.id
-                    LEFT JOIN learning.course_lessons cl ON cl.module_id = cm.id
-                    LEFT JOIN learning.lesson_progress lp ON lp.lesson_id = cl.id
+                    JOIN learning.courses c ON c.project_id = p.id AND c.status = 'published'
+                    LEFT JOIN learning.course_modules m ON m.course_id = c.id
+                    LEFT JOIN learning.course_lessons l ON l.module_id = m.id
+                    LEFT JOIN learning.lesson_progress lp ON lp.lesson_id = l.id
                     LEFT JOIN learning.course_completion cc ON cc.user_id = $2 AND cc.project_id = p.id
                     WHERE p.workspace_id = $1
-                    GROUP BY p.id, p.name, cm.id, cm.title, cm.description
-                    ORDER BY p.name, cm.title
+                    GROUP BY p.id, p.name, c.id, c.name, c.description
+                    ORDER BY p.name, c.name
                 """, workspace_id, user_id)
 
                 return [dict(row) for row in courses]
@@ -321,50 +55,51 @@ Analiza las siguientes anomalías de tu proyecto y demuestra tu comprensión.
             return []
 
     async def get_course_progress(self, user_id: UUID, project_id: UUID) -> CourseProgressResponse:
-        """Get complete course progress for a user in a project"""
+        """Get complete course progress for a user in a project (NEW structure with courses table)"""
         try:
             async with db_manager.postgres_pool.acquire() as conn:
-                # Check if there are dynamically generated courses (child modules)
-                has_dynamic_courses = await conn.fetchval("""
-                    SELECT COUNT(*) FROM learning.course_modules
-                    WHERE project_id = $1 AND parent_id IS NOT NULL
+                # Check if there's a published course for this project
+                published_course = await conn.fetchrow("""
+                    SELECT c.id, c.name, c.description, c.workspace_id
+                    FROM learning.courses c
+                    WHERE c.project_id = $1 AND c.status = 'published'
+                    ORDER BY c.published_at DESC
+                    LIMIT 1
                 """, project_id)
 
-                # Build different queries based on course type
-                if has_dynamic_courses and has_dynamic_courses > 0:
-                    # Dynamic course: only get child modules (with parent_id)
-                    modules_query = """
-                        SELECT
-                            m.id, m.module_order, m.title, m.description,
-                            l.id as lesson_id, l.lesson_order, l.title as lesson_title,
-                            l.content, l.exercise_data, l.is_dynamic,
-                            lp.completed_at, lp.score
-                        FROM learning.course_modules m
-                        LEFT JOIN learning.course_lessons l ON l.module_id = m.id
-                        LEFT JOIN learning.lesson_progress lp ON lp.lesson_id = l.id AND lp.user_id = $1
-                        WHERE m.project_id = $2
-                        AND m.parent_id IS NOT NULL
-                        AND (m.status = 'published' OR m.created_by = $1)
-                        ORDER BY m.module_order, l.lesson_order
-                    """
-                else:
-                    # Static course: get modules without parent (standalone courses)
-                    modules_query = """
-                        SELECT
-                            m.id, m.module_order, m.title, m.description,
-                            l.id as lesson_id, l.lesson_order, l.title as lesson_title,
-                            l.content, l.exercise_data, l.is_dynamic,
-                            lp.completed_at, lp.score
-                        FROM learning.course_modules m
-                        LEFT JOIN learning.course_lessons l ON l.module_id = m.id
-                        LEFT JOIN learning.lesson_progress lp ON lp.lesson_id = l.id AND lp.user_id = $1
-                        WHERE m.project_id = $2
-                        AND m.parent_id IS NULL
-                        AND (m.status = 'published' OR m.created_by = $1)
-                        ORDER BY m.module_order, l.lesson_order
-                    """
+                if not published_course:
+                    # No published course yet - return empty progress
+                    return CourseProgressResponse(
+                        course_id=None,
+                        course_name="",
+                        project_id=project_id,
+                        workspace_id=None,
+                        user_id=user_id,
+                        modules=[],
+                        total_modules=0,
+                        completed_modules=0,
+                        total_lessons=0,
+                        completed_lessons=0,
+                        progress_percentage=0,
+                        is_completed=False,
+                        badge_earned=False
+                    )
 
-                rows = await conn.fetch(modules_query, user_id, project_id)
+                # Get modules and lessons for the published course
+                modules_query = """
+                    SELECT
+                        m.id, m.module_order, m.title, m.description,
+                        l.id as lesson_id, l.lesson_order, l.title as lesson_title,
+                        l.content, l.exercise_data, l.is_dynamic,
+                        lp.completed_at, lp.score
+                    FROM learning.course_modules m
+                    LEFT JOIN learning.course_lessons l ON l.module_id = m.id
+                    LEFT JOIN learning.lesson_progress lp ON lp.lesson_id = l.id AND lp.user_id = $1
+                    WHERE m.course_id = $2
+                    ORDER BY m.module_order, l.lesson_order
+                """
+
+                rows = await conn.fetch(modules_query, user_id, published_course["id"])
 
                 # Organize data
                 modules_dict = {}
@@ -380,7 +115,7 @@ Analiza las siguientes anomalías de tu proyecto y demuestra tu comprensión.
                     if module_id not in modules_dict:
                         modules_dict[module_id] = {
                             "id": module_id,
-                            "project_id": project_id,
+                            "course_id": published_course["id"],
                             "module_order": row["module_order"],
                             "title": row["title"],
                             "description": row["description"],
@@ -389,14 +124,10 @@ Analiza las siguientes anomalías de tu proyecto y demuestra tu comprensión.
                             "completed_lessons": 0
                         }
 
-                    # Generate dynamic content if needed
+                    # Content is now static (generated at course creation), no dynamic generation needed
                     content = row["content"]
-                    if row["is_dynamic"]:
-                        content = await self._generate_dynamic_lesson_content(
-                            conn, project_id, row["lesson_title"]
-                        )
 
-                    # Ensure exercise_data is a dict (asyncpg may return string for JSONB)
+                    # Ensure exercise_data is a dict
                     exercise_data = row["exercise_data"]
                     if exercise_data and isinstance(exercise_data, str):
                         exercise_data = json.loads(exercise_data)
@@ -433,7 +164,10 @@ Analiza las siguientes anomalías de tu proyecto y demuestra tu comprensión.
                 )
 
                 return CourseProgressResponse(
+                    course_id=published_course["id"],
+                    course_name=published_course["name"],
                     project_id=project_id,
+                    workspace_id=published_course["workspace_id"],
                     user_id=user_id,
                     modules=modules_list,
                     total_modules=total_modules,

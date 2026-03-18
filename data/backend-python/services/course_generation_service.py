@@ -1,6 +1,17 @@
 """
-Course Generation Service
+Course Generation Service v2
 Dynamically generates courses based on project anomalies and logs
+
+New Structure:
+- courses table: Main course entity
+- course_modules table: 4 fixed modules per course
+- course_lessons table: Lessons within modules
+
+Course Structure:
+1. Module 1: Introducción a los Logs (2 fixed lessons)
+2. Module 2: Tipos de Anomalías Detectadas (1 lesson per category)
+3. Module 3: Análisis Práctico (5-10 real cases)
+4. Module 4: Evaluación Final (exam with 5 new anomalies)
 """
 import logging
 import json
@@ -10,9 +21,9 @@ from uuid import UUID, uuid4
 
 from config.database import db_manager
 from models.learning_models import (
-    CourseModule, CourseLesson, ProjectAnalysis,
+    Course, ProjectAnalysis,
     CourseGenerateResponse, CoursePreviewResponse,
-    CourseRegenerateResponse
+    CourseRegenerateResponse, CourseLimitsCheck
 )
 
 logger = logging.getLogger(__name__)
@@ -23,11 +34,88 @@ class CourseGenerationService:
 
     MIN_ANOMALIES_REQUIRED = 10  # Minimum anomalies to generate a course
 
+    # Course limits per project
+    MAX_PUBLISHED = 1
+    MAX_DRAFT = 3
+    MAX_PENDING = 3
+
+    async def check_course_limits(
+        self,
+        project_id: UUID,
+        target_status: str = "draft"
+    ) -> CourseLimitsCheck:
+        """Check if a new course can be created based on limits"""
+        try:
+            async with db_manager.postgres_pool.acquire() as conn:
+                # Count courses by status
+                published_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM learning.courses WHERE project_id = $1 AND status = 'published'",
+                    project_id
+                )
+                draft_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM learning.courses WHERE project_id = $1 AND status = 'draft'",
+                    project_id
+                )
+                pending_count = await conn.fetchval(
+                    "SELECT COUNT(*) FROM learning.courses WHERE project_id = $1 AND status = 'pending'",
+                    project_id
+                )
+
+                current_counts = {
+                    "published": published_count,
+                    "draft": draft_count,
+                    "pending": pending_count,
+                    "total": published_count + draft_count + pending_count
+                }
+
+                # Validate limits
+                if target_status == "published" and published_count >= self.MAX_PUBLISHED:
+                    return CourseLimitsCheck(
+                        can_create=False,
+                        reason=f"Ya existe un curso publicado. Máximo permitido: {self.MAX_PUBLISHED}",
+                        current_counts=current_counts
+                    )
+                elif target_status == "draft" and draft_count >= self.MAX_DRAFT:
+                    return CourseLimitsCheck(
+                        can_create=False,
+                        reason=f"Máximo de cursos en borrador alcanzado ({self.MAX_DRAFT})",
+                        current_counts=current_counts
+                    )
+                elif target_status == "pending" and pending_count >= self.MAX_PENDING:
+                    return CourseLimitsCheck(
+                        can_create=False,
+                        reason=f"Máximo de cursos pendientes alcanzado ({self.MAX_PENDING})",
+                        current_counts=current_counts
+                    )
+
+                return CourseLimitsCheck(
+                    can_create=True,
+                    reason=None,
+                    current_counts=current_counts
+                )
+
+        except Exception as e:
+            logger.error(f"Error checking course limits: {e}")
+            return CourseLimitsCheck(
+                can_create=False,
+                reason=f"Error al verificar límites: {str(e)}",
+                current_counts={}
+            )
+
     async def can_generate_course(self, project_id: UUID) -> dict:
         """Check if there's enough data to generate a course"""
         try:
+            # Check limits
+            limits = await self.check_course_limits(project_id, "draft")
+            if not limits.can_create:
+                return {
+                    "can_generate": False,
+                    "reason": limits.reason,
+                    "current_counts": limits.current_counts
+                }
+
             async with db_manager.postgres_pool.acquire() as conn:
-                # Check if there are completed processing jobs (include NULL for backwards compatibility)
+                # Check for completed processing jobs
                 completed_jobs = await conn.fetchval(
                     """SELECT COUNT(*) FROM processing.processing_jobs
                        WHERE (project_id = $1 OR project_id IS NULL) AND status = 'completed'""",
@@ -47,22 +135,6 @@ class CourseGenerationService:
                     return {
                         "can_generate": False,
                         "reason": f"Se requieren al menos {self.MIN_ANOMALIES_REQUIRED} anomalías. Actualmente: {total_anomalies}"
-                    }
-
-                # Check if there's already a draft/pending course - return details for better UX
-                existing = await conn.fetchrow(
-                    """SELECT id, title, status FROM learning.course_modules
-                       WHERE project_id = $1 AND status IN ('draft', 'pending')
-                       ORDER BY created_at DESC LIMIT 1""",
-                    project_id
-                )
-
-                if existing:
-                    return {
-                        "can_generate": False,
-                        "reason": f"Ya existe un curso en borrador/pendiente: '{existing['title']}' (status: {existing['status']}).",
-                        "existing_course_id": str(existing["id"]),
-                        "existing_status": existing["status"]
                     }
 
                 return {
@@ -142,7 +214,7 @@ class CourseGenerationService:
             check = await self.can_generate_course(project_id)
             if not check.get("can_generate"):
                 return CourseGenerateResponse(
-                    course_id=uuid4(),  # Placeholder
+                    course_id=uuid4(),
                     status="error",
                     modules_created=0,
                     lessons_created=0,
@@ -153,58 +225,52 @@ class CourseGenerationService:
                 # Analyze project data
                 analysis = await self.preview_course_data(project_id)
 
+                # Get sample log entries from the project
+                sample_logs = await self._get_sample_log_entries(conn, project_id, limit=5)
+
                 # Create course name if not provided
-                course_name = name or f"Curso de Análisis - {analysis.project_name}"
+                course_name = name or f"Curso de Análisis de Logs - {analysis.project_name}"
 
-                # Find the next available module_order to avoid collisions
-                max_order = await conn.fetchval(
-                    "SELECT COALESCE(MAX(module_order), 0) FROM learning.course_modules WHERE project_id = $1",
-                    project_id if scope == "project" else None
-                )
-                base_order = (max_order // 10 + 1) * 10  # Start at next multiple of 10
-
-                logger.info(f"[DEBUG] Using base module_order={base_order} (max existing={max_order})")
-
-                # Create course module (the course itself)
-                logger.info(f"[DEBUG] Creating course with created_by={created_by}, type={type(created_by)}")
+                # Create the course record
                 course_id = await conn.fetchval("""
-                    INSERT INTO learning.course_modules
-                    (project_id, workspace_id, module_order, title, description, status, scope, created_by)
-                    VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7)
+                    INSERT INTO learning.courses
+                    (project_id, workspace_id, name, description, status, scope, created_by)
+                    VALUES ($1, $2, $3, $4, 'draft', $5, $6)
                     RETURNING id
-                """, project_id if scope == "project" else None,
-                   workspace_id,  # Always save workspace_id regardless of scope
-                   base_order, course_name,
+                """, project_id, workspace_id, course_name,
                    f"Curso generado dinámicamente basado en {analysis.total_anomalies} anomalías detectadas.",
                    scope, created_by)
-                logger.info(f"[DEBUG] Course created with id={course_id}")
 
-                # Generate modules
+                logger.info(f"Course {course_id} created for project {project_id}")
+
+                # Generate the 4 fixed modules
                 total_lessons = 0
 
-                # Module 1: Project Context (DYNAMIC)
-                module1_id = await self._create_module_1_context(conn, course_id, analysis, base_order + 1)
-                total_lessons += 2
-
-                # Module 2: Anomaly Categories (STATIC)
-                module2_lessons = await self._create_module_2_categories(
-                    conn, course_id, analysis, module_order=base_order + 2
+                # Module 1: Introducción a los Logs
+                lessons_m1 = await self._create_module_1_introduction(
+                    conn, course_id, analysis, sample_logs, module_order=1
                 )
-                total_lessons += module2_lessons
+                total_lessons += lessons_m1
 
-                # Module 3: Practical Analysis (STATIC)
-                module3_lessons = await self._create_module_3_practical(
-                    conn, course_id, project_id, module_order=base_order + 3
+                # Module 2: Tipos de Anomalías Detectadas
+                lessons_m2 = await self._create_module_2_categories(
+                    conn, course_id, analysis, module_order=2
                 )
-                total_lessons += module3_lessons
+                total_lessons += lessons_m2
 
-                # Module 4: Final Evaluation (STATIC)
-                module4_lessons = await self._create_module_4_evaluation(
-                    conn, course_id, project_id, module_order=base_order + 4
+                # Module 3: Análisis Práctico
+                lessons_m3 = await self._create_module_3_practical(
+                    conn, course_id, project_id, module_order=3
                 )
-                total_lessons += module4_lessons
+                total_lessons += lessons_m3
 
-                logger.info(f"Course {course_id} generated for project {project_id} with {total_lessons} lessons")
+                # Module 4: Evaluación Final
+                lessons_m4 = await self._create_module_4_evaluation(
+                    conn, course_id, project_id, module_order=4
+                )
+                total_lessons += lessons_m4
+
+                logger.info(f"Course {course_id} generated with {total_lessons} lessons")
 
                 return CourseGenerateResponse(
                     course_id=course_id,
@@ -228,10 +294,10 @@ class CourseGenerationService:
         """Regenerate course with new project data (creates new version)"""
         try:
             async with db_manager.postgres_pool.acquire() as conn:
-                # Get existing course
+                # Get existing published course
                 existing = await conn.fetchrow(
                     """SELECT id, version_number, status
-                       FROM learning.course_modules
+                       FROM learning.courses
                        WHERE project_id = $1 AND status = 'published'
                        ORDER BY created_at DESC LIMIT 1""",
                     project_id
@@ -247,7 +313,7 @@ class CourseGenerationService:
 
                 # Update version number
                 await conn.execute(
-                    "UPDATE learning.course_modules SET version_number = $1 WHERE id = $2",
+                    "UPDATE learning.courses SET version_number = $1 WHERE id = $2",
                     new_version, result.course_id
                 )
 
@@ -263,62 +329,307 @@ class CourseGenerationService:
             logger.error(f"Error regenerating course: {e}")
             raise
 
-    async def refresh_lesson(
+    # ==================== MODULE CREATION METHODS ====================
+
+    async def _create_module_1_introduction(
         self,
-        lesson_id: UUID,
+        conn,
+        course_id: UUID,
+        analysis: ProjectAnalysis,
+        sample_logs: List[str],
+        module_order: int
+    ) -> int:
+        """
+        Create Module 1: Introducción a los Logs
+        Fixed structure with 2 lessons about logs in general,
+        but using examples from the project
+        """
+        module_id = await conn.fetchval("""
+            INSERT INTO learning.course_modules
+            (course_id, module_order, title, description)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id
+        """, course_id, module_order, "Introducción a los Logs",
+           "Fundamentos de los logs: qué son, cómo leerlos y por qué son importantes.")
+
+        # Lesson 1: ¿Qué es un Log?
+        sample_log_text = "\n".join([f"```\n{log}\n```" for log in sample_logs[:3]])
+        content_lesson_1 = f"""# ¿Qué es un Log?
+
+Un **log** (o registro) es un archivo generado por sistemas informáticos que registra eventos y actividades que ocurren durante su funcionamiento. Los logs son fundamentales para:
+
+- **Monitoreo**: Seguir el estado del sistema en tiempo real
+- **Auditoría**: Mantener un registro de actividades para cumplimiento
+- **Debugging**: Identificar y resolver problemas
+- **Análisis de Seguridad**: Detectar accesos no autorizados o ataques
+
+## Tipos de Logs Comunes
+
+Los logs pueden venir en diferentes formatos:
+
+- **Logs de Aplicación**: Generados por software específico
+- **Logs de Sistema**: Del sistema operativo
+- **Logs de Red**: De firewalls, routers, switches
+- **Logs de Seguridad**: De sistemas de autenticación y control de acceso
+
+## Ejemplos de Logs de tu Proyecto
+
+Tu proyecto ha generado {analysis.total_logs} entradas de log. Aquí tienes algunos ejemplos:
+
+{sample_log_text}
+
+## Formato Detectado
+
+Los logs de tu proyecto están principalmente en formato: **{", ".join(analysis.log_formats)}**
+
+## ¿Por Qué Analizar Logs?
+
+Analizar logs permite:
+1. Detectar comportamientos anómalos que podrían indicar problemas de seguridad
+2. Identificar cuellos de botella en el rendimiento
+3. Prevenir fallos antes de que afecten a los usuarios
+4. Cumplir con requisitos de auditoría y normativa
+
+En los siguientes módulos aprenderás a interpretar los logs de tu proyecto y detectar anomalías automáticamente usando técnicas de Machine Learning.
+"""
+
+        await conn.execute("""
+            INSERT INTO learning.course_lessons
+            (module_id, lesson_order, title, content)
+            VALUES ($1, $2, $3, $4)
+        """, module_id, 1, "¿Qué es un Log?", content_lesson_1)
+
+        # Lesson 2: Cómo Leer Logs
+        sample_log_for_reading = sample_logs[0] if sample_logs else "Ejemplo de log no disponible"
+        content_lesson_2 = f"""# Cómo Leer Logs
+
+Saber leer un log es una habilidad esencial para cualquier profesional de IT. En esta lección aprenderás a interpretar la información contenida en los logs.
+
+## Estructura Básica de un Log
+
+La mayoría de los logs siguen un formato similar:
+
+```
+[FECHA HORA] [NIVEL] [FUENTE] MENSAJE
+```
+
+## Análisis de un Log Real
+
+Tomemos como ejemplo este log de tu proyecto:
+
+```
+{sample_log_for_reading}
+```
+
+**Desglose:**
+- **Timestamp**: Indica cuándo ocurrió el evento
+- **Origen**: Qué servicio o componente generó el log
+- **Mensaje**: La información específica del evento
+
+## Niveles de Severidad Comunes
+
+Los logs suelen incluir niveles de severidad:
+
+| Nivel | Significado | Ejemplo |
+|-------|-------------|---------|
+| **DEBUG** | Información detallada para debugging | "Variable x = 5" |
+| **INFO** | Información general | "Servicio iniciado" |
+| **WARNING** | Algo inesperado pero no crítico | "Timeout, reintentando..." |
+| **ERROR** | Error que no impide la operación | "Falló conexión a DB" |
+| **CRITICAL** | Error grave que requiere atención | "Servidor caído" |
+
+## Patrones a Buscar
+
+Cuando leas logs, busca patrones como:
+
+1. **Repeticiones**: El mismo error muchas veces indica un problema sistemático
+2. **Cambios de Comportamiento**: Un patrón que cambia repentinamente
+3. **Valores Inusuales**: Tiempos de respuesta extremadamente largos
+4. **Eventos de Seguridad**: Intentos de login fallidos, accesos denegados
+
+## Anomalías en tus Logs
+
+En este proyecto se han detectado **{analysis.total_anomalies} anomalías**. Aprenderás a identificarlas en los módulos siguientes.
+
+## Consejos Prácticos
+
+- **Usa herramientas de búsqueda**: grep, regex, o herramientas especializadas
+- **Agrupa por tiempo**: Los eventos relacionados suelen ocurrir cerca en el tiempo
+- **Cruza fuentes**: Un error en una parte puede afectar a otra
+- **Documenta patrones**: Crea tu propia biblioteca de patrones conocidos
+"""
+
+        await conn.execute("""
+            INSERT INTO learning.course_lessons
+            (module_id, lesson_order, title, content)
+            VALUES ($1, $2, $3, $4)
+        """, module_id, 2, "Cómo Leer Logs", content_lesson_2)
+
+        return 2
+
+    async def _create_module_2_categories(
+        self,
+        conn,
+        course_id: UUID,
+        analysis: ProjectAnalysis,
+        module_order: int
+    ) -> int:
+        """
+        Create Module 2: Tipos de Anomalías Detectadas
+        One lesson per detected category with theory + project examples
+        """
+        module_id = await conn.fetchval("""
+            INSERT INTO learning.course_modules
+            (course_id, module_order, title, description)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id
+        """, course_id, module_order, "Tipos de Anomalías Detectadas",
+           "Análisis de las diferentes categorías de anomalías encontradas en tu proyecto.")
+
+        lesson_count = 0
+        lesson_order = 1
+
+        # Create lessons for each category with anomalies
+        for category, count in analysis.anomaly_categories.items():
+            if count > 0:
+                content = self._generate_category_lesson_content(category, count, analysis)
+                await conn.execute("""
+                    INSERT INTO learning.course_lessons
+                    (module_id, lesson_order, title, content)
+                    VALUES ($1, $2, $3, $4)
+                """, module_id, lesson_order, f"Anomalías de {category}", content)
+                lesson_count += 1
+                lesson_order += 1
+
+        return lesson_count
+
+    async def _create_module_3_practical(
+        self,
+        conn,
+        course_id: UUID,
         project_id: UUID,
-        preserve_selection: bool = False
-    ) -> dict:
-        """Refresh lesson content with new anomalies from project"""
-        try:
-            async with db_manager.postgres_pool.acquire() as conn:
-                # Get lesson info
-                lesson = await conn.fetchrow(
-                    """SELECT l.module_id, cm.project_id, l.lesson_order, l.is_dynamic
-                       FROM learning.course_lessons l
-                       JOIN learning.course_modules cm ON cm.id = l.module_id
-                       WHERE l.id = $1""",
-                    lesson_id
-                )
+        module_order: int
+    ) -> int:
+        """
+        Create Module 3: Análisis Práctico
+        Real anomaly examples from the project
+        """
+        module_id = await conn.fetchval("""
+            INSERT INTO learning.course_modules
+            (course_id, module_order, title, description)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id
+        """, course_id, module_order, "Análisis Práctico",
+           "Casos reales de anomalías detectadas en tu proyecto con análisis detallado.")
 
-                if not lesson:
-                    raise ValueError("Lesson not found")
+        # Get sample anomalies from MongoDB
+        sample_anomalies = await self._get_sample_anomalies(project_id, count=8)
 
-                if lesson["is_dynamic"]:
-                    return {"message": "Las lecciones dinámicas no necesitan actualización"}
+        lesson_count = 0
+        if not sample_anomalies:
+            # Create a default lesson when no anomalies are available
+            content = """# Análisis de Anomalías
 
-                # Get new anomalies and update content
-                # This would be implemented based on lesson type
-                await conn.execute(
-                    """UPDATE learning.course_lessons
-                       SET content = content || '\n\n[Actualizado: ' || CURRENT_TIMESTAMP || ']'
-                       WHERE id = $1""",
-                    lesson_id
-                )
+No se encontraron anomalías específicas en este proyecto todavía.
 
-                # Mark course as draft again
-                await conn.execute(
-                    """UPDATE learning.course_modules
-                       SET status = 'draft'
-                       WHERE id = $1""",
-                    lesson["module_id"]
-                )
+## Instrucciones
 
-                return {
-                    "lesson_id": str(lesson_id),
-                    "message": "Lección actualizada. El curso vuelve a estado borrador y requiere aprobación."
-                }
+Cuando se generen anomalías, podrás:
+1. Ver el log original
+2. Analizar la explicación del LLM
+3. Interpretar el score de anomalía
+4. Identificar el tipo de anomalía
 
-        except Exception as e:
-            logger.error(f"Error refreshing lesson: {e}")
-            raise
+**Nota**: Este contenido se actualizará automáticamente cuando se procesen más logs.
+"""
+            await conn.execute("""
+                INSERT INTO learning.course_lessons
+                (module_id, lesson_order, title, content)
+                VALUES ($1, $2, $3, $4)
+            """, module_id, 1, "Análisis de Anomalías", content)
+            lesson_count = 1
+        else:
+            for idx, anomaly in enumerate(sample_anomalies, 1):
+                content = self._generate_practical_lesson_content(anomaly, idx)
+                await conn.execute("""
+                    INSERT INTO learning.course_lessons
+                    (module_id, lesson_order, title, content, exercise_data)
+                    VALUES ($1, $2, $3, $4, $5)
+                """, module_id, idx, f"Caso Práctico {idx}: {anomaly.get('type', 'Anomalía')}",
+                   content, json.dumps({"anomaly_id": anomaly.get("id")}))
+                lesson_count += 1
 
-    # ==================== PRIVATE METHODS ====================
+        return lesson_count
+
+    async def _create_module_4_evaluation(
+        self,
+        conn,
+        course_id: UUID,
+        project_id: UUID,
+        module_order: int
+    ) -> int:
+        """
+        Create Module 4: Evaluación Final
+        Practical exam with new anomalies not seen in Module 3
+        """
+        module_id = await conn.fetchval("""
+            INSERT INTO learning.course_modules
+            (course_id, module_order, title, description)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id
+        """, course_id, module_order, "Evaluación Final",
+           "Demuestra tu conocimiento analizando nuevas anomalías.")
+
+        # Get evaluation anomalies (different from module 3)
+        eval_anomalies = await self._get_sample_anomalies(project_id, count=5, offset=8)
+
+        content = """# Evaluación Final
+
+¡Has llegado al final del curso! Ahora es momento de poner en práctica todo lo aprendido.
+
+## Instrucciones
+
+A continuación analizarás 5 anomalías que no hemos visto en los módulos anteriores. Para cada una debes:
+
+1. **Identificar el tipo de anomalía**: ¿Es de seguridad, rendimiento, red, etc.?
+2. **Evaluar la severidad**: ¿Qué tan crítico es este evento?
+3. **Proponer una acción**: ¿Qué harías ante esta situación?
+
+## Criterios de Evaluación
+
+- Necesitas al menos **70% de respuestas correctas** para aprobar
+- Cada anomalía vale 20 puntos
+- Tienes intentos ilimitados pero se registrará tu mejor puntuación
+
+## Proceso
+
+1. Revisa cada anomalía presentada
+2. Lee cuidadosamente el log original y la explicación
+3. Responde las preguntas planteadas
+4. Al finalizar recibirás tu calificación y feedback
+
+¡Mucho éxito!
+"""
+
+        exercise_data = {
+            "type": "final_exam",
+            "passing_score": 70,
+            "anomalies": [{"id": a.get("id")} for a in eval_anomalies]
+        }
+
+        await conn.execute("""
+            INSERT INTO learning.course_lessons
+            (module_id, lesson_order, title, content, exercise_data)
+            VALUES ($1, $2, $3, $4, $5)
+        """, module_id, 1, "Examen Práctico", content, json.dumps(exercise_data))
+
+        return 1
+
+    # ==================== PRIVATE HELPER METHODS ====================
 
     async def _count_project_anomalies(self, conn, project_id: UUID) -> int:
         """Count total anomalies in project from MongoDB results collection"""
         try:
-            # Get completed job IDs (include NULL for backwards compatibility)
             job_ids = await conn.fetch(
                 """SELECT id FROM processing.processing_jobs
                    WHERE (project_id = $1 OR project_id IS NULL) AND status = 'completed'""",
@@ -328,10 +639,8 @@ class CourseGenerationService:
             if not job_ids:
                 return 0
 
-            # Get file_id strings from jobs
             file_ids = [str(job["id"]) for job in job_ids]
 
-            # Use aggregation to count anomalies (same logic as _get_anomalies_analysis)
             pipeline = [
                 {
                     "$addFields": {
@@ -361,14 +670,11 @@ class CourseGenerationService:
 
         except Exception as e:
             logger.error(f"Error counting anomalies: {e}")
-            import traceback
-            traceback.print_exc()
             return 0
 
     async def _get_anomalies_analysis(self, conn, project_id: UUID) -> dict:
         """Get detailed anomaly analysis from MongoDB results"""
         try:
-            # Get completed job IDs (include jobs without project_id for backwards compatibility)
             job_ids = await conn.fetch(
                 """SELECT id FROM processing.processing_jobs
                    WHERE status = 'completed'
@@ -379,12 +685,8 @@ class CourseGenerationService:
             if not job_ids:
                 return {"total": 0, "categories": {}, "severity": {}, "top_anomalies": []}
 
-            # Get file_id strings from jobs
             file_ids = [str(job["id"]) for job in job_ids]
-            logger.info(f"[DEBUG] Found {len(file_ids)} job IDs: {file_ids}")
 
-            # Pipeline to aggregate anomaly data from MongoDB results collection
-            # Convert chunk_id string to ObjectId for lookup
             pipeline = [
                 {
                     "$addFields": {
@@ -422,17 +724,10 @@ class CourseGenerationService:
                 }
             ]
 
-            logger.info(f"[DEBUG] Running aggregation pipeline with {len(file_ids)} file IDs")
-            result_count = 0
             async for result in db_manager.mongodb_db["results"].aggregate(pipeline):
-                result_count += 1
-                logger.info(f"[DEBUG] Aggregation result {result_count}: {result.get('total', 0)} total anomalies")
                 total = result.get("total", 0)
-
-                # Categorize anomalies by explanation keywords
                 categories = self._categorize_anomalies(result.get("anomalies", []))
 
-                # Get top anomalies by score (most negative first)
                 top_anomalies = sorted(
                     result.get("anomalies", []),
                     key=lambda x: x.get("anomalies", {}).get("score", 0)
@@ -449,7 +744,6 @@ class CourseGenerationService:
                     for a in top_anomalies
                 ]
 
-                logger.info(f"[DEBUG] Returning {total} anomalies")
                 return {
                     "total": total,
                     "categories": categories,
@@ -461,210 +755,70 @@ class CourseGenerationService:
                     "top_anomalies": top_anomalies_formatted
                 }
 
-            # If no results found
-            logger.info(f"[DEBUG] No aggregation results returned, returning 0 anomalies")
             return {"total": 0, "categories": {}, "severity": {}, "top_anomalies": []}
 
         except Exception as e:
             logger.error(f"Error getting anomalies analysis: {e}")
-            import traceback
-            traceback.print_exc()
             return {"total": 0, "categories": {}, "severity": {}, "top_anomalies": []}
 
-    async def _get_log_formats(self, conn, project_id: UUID) -> List[str]:
-        """Get detected log formats"""
+    async def _get_sample_log_entries(
+        self,
+        conn,
+        project_id: UUID,
+        limit: int = 5
+    ) -> List[str]:
+        """Get sample log entries from the project"""
         try:
-            # Check log format from actual anomaly data
-            # For now, default to common formats - this could be enhanced
-            # by detecting format from the first log entry
-            return ["Bro/Zeek"]  # Default format based on the logs shown
+            job_ids = await conn.fetch(
+                """SELECT id FROM processing.processing_jobs
+                   WHERE (project_id = $1 OR project_id IS NULL) AND status = 'completed'
+                   LIMIT 3""",
+                project_id
+            )
+
+            if not job_ids:
+                return [
+                    "Ejemplo de log: [2024-01-15 10:30:45] INFO: Connection established from 192.168.1.100",
+                    "Ejemplo de log: [2024-01-15 10:31:12] WARNING: High response time detected: 2500ms",
+                    "Ejemplo de log: [2024-01-15 10:32:01] ERROR: Database connection failed, retrying..."
+                ]
+
+            file_ids = [str(job["id"]) for job in job_ids]
+
+            # Get sample chunks
+            chunks = await db_manager.mongodb_db["chunks"].find({
+                "file_id": {"$in": file_ids}
+            }).limit(limit).to_list(length=limit)
+
+            log_entries = []
+            for chunk in chunks:
+                data = chunk.get("data", "")
+                if data:
+                    # Extract first few lines
+                    lines = data.split("\n")[:3]
+                    log_entries.extend([line.strip() for line in lines if line.strip()])
+
+            return log_entries[:limit] if log_entries else [
+                "Ejemplo de log: [2024-01-15 10:30:45] INFO: Connection established",
+                "Ejemplo de log: [2024-01-15 10:31:12] WARNING: High response time detected"
+            ]
+
         except Exception as e:
-            logger.error(f"Error getting log formats: {e}")
-            return ["Unknown"]
-
-    async def _create_module_1_context(
-        self,
-        conn,
-        course_id: UUID,
-        analysis: ProjectAnalysis,
-        module_order: int
-    ) -> UUID:
-        """Create Module 1: Project Context (DYNAMIC)"""
-        module_id = await conn.fetchval("""
-            INSERT INTO learning.course_modules
-            (project_id, workspace_id, module_order, title, description, status, scope, created_by, parent_id)
-            SELECT project_id, workspace_id, $2, $3, $4, status, scope, created_by, $5
-            FROM learning.course_modules WHERE id = $1
-            RETURNING id
-        """, course_id, module_order, "Contexto del Proyecto",
-           "Información general sobre tu proyecto y las anomalías detectadas.", course_id)
-
-        # Lesson 1: Tu proyecto en números (DYNAMIC)
-        await conn.execute("""
-            INSERT INTO learning.course_lessons
-            (module_id, lesson_order, title, content, is_dynamic)
-            VALUES ($1, $2, $3, $4, TRUE)
-        """, module_id, 1, "Tu Proyecto en Números",
-           "Contenido dinámico: Se generará al visualizar la lección.")
-
-        # Lesson 2: Anomalías encontradas (DYNAMIC)
-        await conn.execute("""
-            INSERT INTO learning.course_lessons
-            (module_id, lesson_order, title, content, is_dynamic)
-            VALUES ($1, $2, $3, $4, TRUE)
-        """, module_id, 2, "Anomalías Encontradas",
-           "Contenido dinámico: Se generará al visualizar la lección.")
-
-        return module_id
-
-    async def _create_module_2_categories(
-        self,
-        conn,
-        course_id: UUID,
-        analysis: ProjectAnalysis,
-        module_order: int
-    ) -> int:
-        """Create Module 2: Anomaly Categories (STATIC)"""
-        module_id = await conn.fetchval("""
-            INSERT INTO learning.course_modules
-            (project_id, workspace_id, module_order, title, description, status, scope, created_by, parent_id)
-            SELECT project_id, workspace_id, $2, $3, $4, status, scope, created_by, $5
-            FROM learning.course_modules WHERE id = $1
-            RETURNING id
-        """, course_id, module_order, "Tipos de Anomalías",
-           "Análisis de las diferentes categorías de anomalías detectadas.", course_id)
-
-        lesson_count = 0
-        lesson_order = 1
-
-        # Create lessons for each category with anomalies
-        for category, count in analysis.anomaly_categories.items():
-            if count > 0:
-                content = self._generate_category_lesson_content(category, count, analysis)
-                await conn.execute("""
-                    INSERT INTO learning.course_lessons
-                    (module_id, lesson_order, title, content, is_dynamic)
-                    VALUES ($1, $2, $3, $4, FALSE)
-                """, module_id, lesson_order, f"Anomalías de {category}", content)
-                lesson_count += 1
-                lesson_order += 1
-
-        return lesson_count
-
-    async def _create_module_3_practical(
-        self,
-        conn,
-        course_id: UUID,
-        project_id: UUID,
-        module_order: int
-    ) -> int:
-        """Create Module 3: Practical Analysis with Real Anomalies (STATIC)"""
-        module_id = await conn.fetchval("""
-            INSERT INTO learning.course_modules
-            (project_id, workspace_id, module_order, title, description, status, scope, created_by, parent_id)
-            SELECT project_id, workspace_id, $2, $3, $4, status, scope, created_by, $5
-            FROM learning.course_modules WHERE id = $1
-            RETURNING id
-        """, course_id, module_order, "Análisis Práctico",
-           "Ejemplos reales de anomalías detectadas en tu proyecto.", course_id)
-
-        # Get sample anomalies (would query MongoDB in production)
-        sample_anomalies = await self._get_sample_anomalies(project_id, count=5)
-
-        lesson_count = 0
-        if not sample_anomalies:
-            # Create a default lesson when no anomalies are available
-            content = """# Análisis de Anomalías
-
-No se encontraron anomalías específicas en este proyecto todavía.
-
-## Instrucciones
-
-Cuando se generen anomalías, podrás:
-1. Ver el log original
-2. Analizar la explicación del LLM
-3. Interpretar el score de anomalía
-4. Identificar el tipo de anomalía
-
-**Nota**: Este contenido se actualizará automáticamente cuando se procesen más logs.
-"""
-            await conn.execute("""
-                INSERT INTO learning.course_lessons
-                (module_id, lesson_order, title, content, is_dynamic)
-                VALUES ($1, $2, $3, $4, FALSE)
-            """, module_id, 1, "Análisis de Anomalías", content)
-            lesson_count = 1
-        else:
-            for idx, anomaly in enumerate(sample_anomalies, 1):
-                content = self._generate_practical_lesson_content(anomaly, idx)
-                await conn.execute("""
-                    INSERT INTO learning.course_lessons
-                    (module_id, lesson_order, title, content, exercise_data, is_dynamic)
-                    VALUES ($1, $2, $3, $4, $5, FALSE)
-                """, module_id, idx, f"Caso Práctico {idx}: {anomaly.get('type', 'Anomalía')}",
-                   content, json.dumps({"anomaly_id": anomaly.get("id")}))  # Convert dict to JSON string
-                lesson_count += 1
-
-        return lesson_count
-
-    async def _create_module_4_evaluation(
-        self,
-        conn,
-        course_id: UUID,
-        project_id: UUID,
-        module_order: int
-    ) -> int:
-        """Create Module 4: Final Evaluation (STATIC)"""
-        module_id = await conn.fetchval("""
-            INSERT INTO learning.course_modules
-            (project_id, workspace_id, module_order, title, description, status, scope, created_by, parent_id)
-            SELECT project_id, workspace_id, $2, $3, $4, status, scope, created_by, $5
-            FROM learning.course_modules WHERE id = $1
-            RETURNING id
-        """, course_id, module_order, "Evaluación Final",
-           "Demuestra tu conocimiento analizando nuevas anomalías.", course_id)
-
-        # Get evaluation anomalies (different from module 3)
-        eval_anomalies = await self._get_sample_anomalies(project_id, count=5, exclude_seen=True)
-
-        content = """# Evaluación Final
-
-Analiza las siguientes 5 anomalías y demuestra tu comprensión.
-
-## Instrucciones
-
-1. Revisa cada anomalía presentada
-2. Identifica el tipo y severidad
-3. Interpreta qué significa para tu proyecto
-4. Necesitas al menos 70% de respuestas correctas para aprobar
-
-"""
-
-        exercise_data = {
-            "type": "final_exam",
-            "dynamic": True,
-            "passing_score": 70,
-            "anomalies": [{"id": a.get("id")} for a in eval_anomalies]
-        }
-
-        await conn.execute("""
-            INSERT INTO learning.course_lessons
-            (module_id, lesson_order, title, content, exercise_data, is_dynamic)
-            VALUES ($1, $2, $3, $4, $5, FALSE)
-        """, module_id, 1, "Examen Práctico", content, json.dumps(exercise_data))
-
-        return 1
+            logger.error(f"Error getting sample log entries: {e}")
+            return [
+                "Ejemplo de log: [2024-01-15 10:30:45] INFO: Connection established",
+                "Ejemplo de log: [2024-01-15 10:31:12] WARNING: High response time detected"
+            ]
 
     async def _get_sample_anomalies(
         self,
         project_id: UUID,
         count: int = 5,
-        exclude_seen: bool = False
+        offset: int = 0
     ) -> List[dict]:
         """Get sample anomalies from project from MongoDB"""
         try:
             async with db_manager.postgres_pool.acquire() as conn:
-                # Get completed job IDs
                 job_ids = await conn.fetch(
                     "SELECT id FROM processing.processing_jobs WHERE project_id = $1 AND status = 'completed'",
                     project_id
@@ -675,11 +829,11 @@ Analiza las siguientes 5 anomalías y demuestra tu comprensión.
 
                 job_id_strs = [str(job["id"]) for job in job_ids]
 
-            # Query MongoDB for sample anomalies, sorted by score
             pipeline = [
                 {"$match": {"job_id": {"$in": job_id_strs}, "anomalies": {"$exists": True}}},
                 {"$unwind": "$anomalies"},
                 {"$sort": {"anomalies.score": -1}},
+                {"$skip": offset},
                 {"$limit": count}
             ]
 
@@ -702,13 +856,20 @@ Analiza las siguientes 5 anomalías y demuestra tu comprensión.
             logger.error(f"Error getting sample anomalies: {e}")
             return []
 
+    async def _get_log_formats(self, conn, project_id: UUID) -> List[str]:
+        """Get detected log formats"""
+        try:
+            return ["Bro/Zeek"]  # Default format
+        except Exception as e:
+            logger.error(f"Error getting log formats: {e}")
+            return ["Unknown"]
+
     def _infer_anomaly_type(self, anomaly: dict) -> str:
         """Infer anomaly category from explanation and log entry"""
         explanation = anomaly.get("explanation", "").lower()
         log_entry = anomaly.get("log_entry", "").lower()
         combined = explanation + " " + log_entry
 
-        # Keyword-based classification
         if any(kw in combined for kw in ["login", "password", "auth", "failed", "denied", "security", "attack", "malware"]):
             return "Seguridad"
         elif any(kw in combined for kw in ["response time", "latency", "slow", "timeout", "performance", "delay"]):
@@ -736,7 +897,6 @@ Analiza las siguientes 5 anomalías y demuestra tu comprensión.
             if anomaly_type in categories:
                 categories[anomaly_type] += 1
 
-        # Remove categories with zero count
         return {k: v for k, v in categories.items() if v > 0}
 
     def _generate_category_lesson_content(
@@ -748,7 +908,6 @@ Analiza las siguientes 5 anomalías y demuestra tu comprensión.
         """Generate content for category lesson"""
         percentage = (count / max(analysis.total_anomalies, 1)) * 100
 
-        # Category-specific content
         category_info = {
             "Seguridad": {
                 "description": "Las anomalías de seguridad representan patrones que podrían indicar accesos no autorizados, ataques, o comportamientos maliciosos en tu sistema.",
@@ -806,9 +965,9 @@ Se detectaron **{count} anomalías** de esta categoría, lo que representa el **
 
 {info['recommendation']}
 
-## Próximos Pasos
+## Análisis en tu Proyecto
 
-En el módulo de **Análisis Práctico** revisarás casos reales de anomalías de esta categoría detectadas en tu proyecto, con el log original y la explicación generada por el LLM.
+Basado en los datos analizados, tu proyecto muestra patrones de {category.lower()} que requieren atención. En el módulo de **Análisis Práctico** revisarás casos reales de anomalías de esta categoría detectadas en tu proyecto, con el log original y la explicación generada por el sistema.
 """
 
     def _generate_practical_lesson_content(self, anomaly: dict, index: int) -> str:
@@ -831,15 +990,22 @@ En el módulo de **Análisis Práctico** revisarás casos reales de anomalías d
 **Score de Anomalía:** {score:.2f}
 **Tipo:** {anomaly_type}
 
-### Explicación del LLM
+### Explicación del Sistema
 
 {explanation}
 
 Esta anomalía fue detectada automáticamente por el algoritmo **Isolation Forest** basado en patrones inusuales en los logs, y posteriormente analizada por un modelo de lenguaje para proporcionar contexto.
 
+## Interpreta el Score
+
+El score de anomalía indica qué tan "inusual" es este evento:
+- **Scores negativos**: Más anómalo (ej: -0.5 es muy inusual)
+- **Scores cercanos a 0**: Normal
+- **Scores positivos**: Muy común
+
 ## Ejercicios de Análisis
 
-Basado en la información anterior, responde:
+Basado en la información anterior, reflexiona:
 
 1. **Identificación**: ¿Qué patrón específico hace que este log sea considerado una anomalía?
 
