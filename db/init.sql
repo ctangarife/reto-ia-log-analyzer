@@ -595,5 +595,167 @@ COMMENT ON TABLE auth.permissions IS 'Permisos específicos dentro de cada módu
 COMMENT ON TABLE auth.roles IS 'Roles del sistema que agrupan permisos';
 
 -- ============================================================================
+-- SCHEMA: LEARNING - Sistema de Mini-Curso Interactivo
+-- ============================================================================
+
+CREATE SCHEMA IF NOT EXISTS learning;
+
+-- Otorgar permisos al usuario de la aplicación
+GRANT USAGE ON SCHEMA learning TO anomaly_user;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA learning TO anomaly_user;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA learning TO anomaly_user;
+
+-- Actualizar search_path para incluir el schema learning
+ALTER USER anomaly_user SET search_path = auth, processing, learning, public;
+
+-- Tablas de contenido del curso (módulos y lecciones)
+-- Los cursos pueden ser project-scoped o workspace-scoped
+-- workspace_id se guarda como referencia para optimizar consultas de listado
+CREATE TABLE IF NOT EXISTS learning.course_modules (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    project_id UUID,  -- NULL para cursos de workspace
+    workspace_id UUID,  -- Referencia al workspace
+    module_order INT NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    -- Flujo de trabajo de cursos
+    status VARCHAR(20) DEFAULT 'draft',  -- draft, pending, approved, published, archived
+    scope VARCHAR(20) DEFAULT 'project',  -- project, workspace
+    version_number INT DEFAULT 1,
+    created_by UUID,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    reviewed_by UUID,
+    reviewed_at TIMESTAMP,
+    published_at TIMESTAMP,
+    archived_at TIMESTAMP,
+    rejection_reason TEXT,
+    change_description TEXT,
+    UNIQUE(project_id, module_order)
+);
+
+CREATE TABLE IF NOT EXISTS learning.course_lessons (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    module_id UUID NOT NULL REFERENCES learning.course_modules(id) ON DELETE CASCADE,
+    lesson_order INT NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    content TEXT,  -- NULL para lecciones dinámicas
+    exercise_data JSONB,
+    is_dynamic BOOLEAN DEFAULT FALSE,  -- TRUE = contenido generado al vuelo
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(module_id, lesson_order)
+);
+
+-- Tablas de seguimiento de progreso del usuario
+CREATE TABLE IF NOT EXISTS learning.lesson_progress (
+    user_id UUID NOT NULL,
+    project_id UUID NOT NULL,
+    workspace_id UUID,  -- Referencia al workspace (para consultas optimizadas)
+    lesson_id UUID NOT NULL REFERENCES learning.course_lessons(id) ON DELETE CASCADE,
+    completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    score INT,
+    attempts INT DEFAULT 0,
+    PRIMARY KEY (user_id, project_id, lesson_id)
+);
+
+CREATE TABLE IF NOT EXISTS learning.course_completion (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    project_id UUID NOT NULL,
+    workspace_id UUID,  -- Referencia al workspace (para consultas optimizadas)
+    completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    total_score INT DEFAULT 0,
+    badge_earned BOOLEAN DEFAULT TRUE,
+    certificate_url VARCHAR(500),
+    UNIQUE(user_id, project_id)
+);
+
+CREATE TABLE IF NOT EXISTS learning.exercise_attempts (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL,
+    project_id UUID NOT NULL,
+    workspace_id UUID,  -- Referencia al workspace (para consultas optimizadas)
+    lesson_id UUID NOT NULL REFERENCES learning.course_lessons(id) ON DELETE CASCADE,
+    anomaly_id VARCHAR(255),
+    user_answer JSONB NOT NULL,
+    is_correct BOOLEAN,
+    attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Tablas de flujo de trabajo y gestión de cursos
+CREATE TABLE IF NOT EXISTS learning.course_reviews (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    course_id UUID NOT NULL,
+    reviewer_id UUID NOT NULL,
+    status VARCHAR(20) NOT NULL,  -- pending_review, approved, rejected
+    comments TEXT,
+    reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    version_number INT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS learning.course_versions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    course_module_id UUID NOT NULL,
+    version_number INT NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    created_by UUID,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    change_description TEXT,
+    UNIQUE(course_module_id, version_number)
+);
+
+CREATE TABLE IF NOT EXISTS learning.course_notifications (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    workspace_id UUID NOT NULL,
+    user_id UUID NOT NULL,
+    course_id UUID,
+    type VARCHAR(50) NOT NULL,  -- pending_review, approved, rejected, published
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Tabla de historial de cambios de lecciones (edición granular)
+CREATE TABLE IF NOT EXISTS learning.lesson_change_history (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    lesson_id UUID NOT NULL,
+    changed_by UUID NOT NULL,
+    changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    change_type VARCHAR(50) NOT NULL,  -- content, title, exercise, minor_edit
+    change_description TEXT,
+    old_value TEXT,
+    new_value TEXT,
+    is_minor_edit BOOLEAN DEFAULT FALSE
+);
+
+-- Índices para optimización
+CREATE INDEX IF NOT EXISTS idx_lesson_progress_user ON learning.lesson_progress(user_id, project_id);
+CREATE INDEX IF NOT EXISTS idx_lesson_progress_lesson ON learning.lesson_progress(lesson_id);
+CREATE INDEX IF NOT EXISTS idx_exercise_attempts_user ON learning.exercise_attempts(user_id, project_id);
+CREATE INDEX IF NOT EXISTS idx_course_modules_workspace ON learning.course_modules(workspace_id);  -- Para listar cursos por workspace
+CREATE INDEX IF NOT EXISTS idx_course_completion_user ON learning.course_completion(user_id, project_id);
+
+-- Índices para flujo de trabajo de cursos
+CREATE INDEX IF NOT EXISTS idx_course_reviews_course ON learning.course_reviews(course_id);
+CREATE INDEX IF NOT EXISTS idx_course_versions_module ON learning.course_versions(course_module_id);
+CREATE INDEX IF NOT EXISTS idx_course_notifications_workspace ON learning.course_notifications(workspace_id, user_id);
+CREATE INDEX IF NOT EXISTS idx_course_notifications_unread ON learning.course_notifications(user_id, is_read);
+
+-- Índices para historial de cambios de lecciones
+CREATE INDEX IF NOT EXISTS idx_lesson_change_history_lesson ON learning.lesson_change_history(lesson_id);
+CREATE INDEX IF NOT EXISTS idx_lesson_change_history_changed_by ON learning.lesson_change_history(changed_by);
+
+-- Comentarios para el schema learning
+COMMENT ON SCHEMA learning IS 'Schema para sistema de mini-curso interactivo de análisis de logs con generación dinámica';
+COMMENT ON TABLE learning.course_modules IS 'Módulos del curso (pueden ser project-scoped o workspace-scoped)';
+COMMENT ON TABLE learning.course_lessons IS 'Lecciones individuales (pueden ser estáticas o dinámicas)';
+COMMENT ON TABLE learning.lesson_progress IS 'Progreso de usuarios por lección (por proyecto)';
+COMMENT ON TABLE learning.course_completion IS 'Registro de finalización del curso por usuario y proyecto';
+COMMENT ON TABLE learning.exercise_attempts IS 'Intentos de ejercicios dinámicos';
+COMMENT ON TABLE learning.course_reviews IS 'Registro de revisiones y aprobaciones de cursos';
+COMMENT ON TABLE learning.course_versions IS 'Snapshots de versiones de cursos para control de cambios';
+COMMENT ON TABLE learning.course_notifications IS 'Notificaciones para usuarios sobre eventos de cursos (revisiones pendientes, etc.)';
+COMMENT ON TABLE learning.lesson_change_history IS 'Historial de cambios de lecciones para edición granular y auditoría';
+
+-- ============================================================================
 -- FIN DEL SCRIPT DE INICIALIZACIÓN
 -- ============================================================================

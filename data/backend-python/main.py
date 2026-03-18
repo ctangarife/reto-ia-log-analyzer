@@ -34,6 +34,10 @@ from routes.auth import router as auth_router
 from routes.users import router as users_router
 from routes.workspaces import router as workspaces_router
 from routes.projects import router as projects_router
+from routes.course import router as course_router, workspace_router
+from routes.course_generation import router as course_generation_router
+from routes.course_rbac import router as course_rbac_router
+from routes.lesson_edit import router as lesson_edit_router
 
 # Configurar logging
 logging.basicConfig(
@@ -98,6 +102,11 @@ app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(workspaces_router)
 app.include_router(projects_router)
+app.include_router(course_router)
+app.include_router(workspace_router)
+app.include_router(course_generation_router)
+app.include_router(course_rbac_router)
+app.include_router(lesson_edit_router)
 
 # === ENDPOINTS ===
 
@@ -106,8 +115,366 @@ async def health_check():
     """Health check endpoint"""
     return {"status": "ok"}
 
+@app.post("/admin/init-learning-schema")
+async def init_learning_schema():
+    """
+    Inicializa el esquema learning y sus tablas con la estructura completa.
+    Incluye flujo de trabajo de cursos (draft, pending, published, etc.)
+    y generación dinámica basada en anomalías del proyecto.
+
+    Para bases de datos existentes que no tienen el schema learning.
+    """
+    try:
+        async with db_manager.postgres_pool.acquire() as conn:
+            # Verificar si el schema ya existe
+            schema_exists = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = 'learning')"
+            )
+
+            if schema_exists:
+                # Verificar si tiene la estructura nueva
+                has_workflow_fields = await conn.fetchval("""
+                    SELECT EXISTS(SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'learning' AND table_name = 'course_modules' AND column_name = 'status')
+                """)
+
+                if has_workflow_fields:
+                    return {
+                        "status": "already_exists",
+                        "message": "El esquema learning ya existe con la estructura actualizada."
+                    }
+                else:
+                    return {
+                        "status": "needs_migration",
+                        "message": "El esquema learning existe pero necesita migración. Ejecuta POST /admin/migrate-learning-schema"
+                    }
+
+            # Crear el esquema y tablas
+            await conn.execute("CREATE SCHEMA IF NOT EXISTS learning")
+
+            # Crear tabla course_modules (con campos de flujo de trabajo)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS learning.course_modules (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    project_id UUID,  -- NULL para cursos de workspace
+                    workspace_id UUID,
+                    module_order INT NOT NULL,
+                    title VARCHAR(255) NOT NULL,
+                    description TEXT,
+                    -- Flujo de trabajo
+                    status VARCHAR(20) DEFAULT 'draft',
+                    scope VARCHAR(20) DEFAULT 'project',
+                    version_number INT DEFAULT 1,
+                    created_by UUID,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    reviewed_by UUID,
+                    reviewed_at TIMESTAMP,
+                    published_at TIMESTAMP,
+                    archived_at TIMESTAMP,
+                    rejection_reason TEXT,
+                    change_description TEXT,
+                    UNIQUE(project_id, module_order)
+                )
+            """)
+
+            # Crear tabla course_lessons (con soporte para lecciones dinámicas)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS learning.course_lessons (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    module_id UUID NOT NULL REFERENCES learning.course_modules(id) ON DELETE CASCADE,
+                    lesson_order INT NOT NULL,
+                    title VARCHAR(255) NOT NULL,
+                    content TEXT,  -- NULL para lecciones dinámicas
+                    exercise_data JSONB,
+                    is_dynamic BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(module_id, lesson_order)
+                )
+            """)
+
+            # Crear tabla lesson_progress
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS learning.lesson_progress (
+                    user_id UUID NOT NULL,
+                    project_id UUID NOT NULL,
+                    workspace_id UUID,
+                    lesson_id UUID NOT NULL REFERENCES learning.course_lessons(id) ON DELETE CASCADE,
+                    completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    score INT,
+                    attempts INT DEFAULT 0,
+                    PRIMARY KEY (user_id, project_id, lesson_id)
+                )
+            """)
+
+            # Crear tabla course_completion
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS learning.course_completion (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    user_id UUID NOT NULL,
+                    project_id UUID NOT NULL,
+                    workspace_id UUID,
+                    completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    total_score INT DEFAULT 0,
+                    badge_earned BOOLEAN DEFAULT TRUE,
+                    certificate_url VARCHAR(500),
+                    UNIQUE(user_id, project_id)
+                )
+            """)
+
+            # Crear tabla exercise_attempts
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS learning.exercise_attempts (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    user_id UUID NOT NULL,
+                    project_id UUID NOT NULL,
+                    workspace_id UUID,
+                    lesson_id UUID NOT NULL REFERENCES learning.course_lessons(id) ON DELETE CASCADE,
+                    anomaly_id VARCHAR(255),
+                    user_answer JSONB NOT NULL,
+                    is_correct BOOLEAN,
+                    attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Crear tabla course_reviews
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS learning.course_reviews (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    course_id UUID NOT NULL,
+                    reviewer_id UUID NOT NULL,
+                    status VARCHAR(20) NOT NULL,
+                    comments TEXT,
+                    reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    version_number INT NOT NULL
+                )
+            """)
+
+            # Crear tabla course_versions
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS learning.course_versions (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    course_module_id UUID NOT NULL,
+                    version_number INT NOT NULL,
+                    title VARCHAR(255) NOT NULL,
+                    description TEXT,
+                    created_by UUID,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    change_description TEXT,
+                    UNIQUE(course_module_id, version_number)
+                )
+            """)
+
+            # Crear tabla course_notifications
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS learning.course_notifications (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    workspace_id UUID NOT NULL,
+                    user_id UUID NOT NULL,
+                    course_id UUID,
+                    type VARCHAR(50) NOT NULL,
+                    is_read BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Crear tabla lesson_change_history
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS learning.lesson_change_history (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    lesson_id UUID NOT NULL,
+                    changed_by UUID NOT NULL,
+                    changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    change_type VARCHAR(50) NOT NULL,
+                    change_description TEXT,
+                    old_value TEXT,
+                    new_value TEXT,
+                    is_minor_edit BOOLEAN DEFAULT FALSE
+                )
+            """)
+
+            # Crear índices
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_lesson_progress_user ON learning.lesson_progress(user_id, project_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_lesson_progress_lesson ON learning.lesson_progress(lesson_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_exercise_attempts_user ON learning.exercise_attempts(user_id, project_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_course_modules_workspace ON learning.course_modules(workspace_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_course_completion_user ON learning.course_completion(user_id, project_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_course_reviews_course ON learning.course_reviews(course_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_course_versions_module ON learning.course_versions(course_module_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_course_notifications_workspace ON learning.course_notifications(workspace_id, user_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_course_notifications_unread ON learning.course_notifications(user_id, is_read)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_lesson_change_history_lesson ON learning.lesson_change_history(lesson_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_lesson_change_history_changed_by ON learning.lesson_change_history(changed_by)")
+
+            # Otorgar permisos
+            await conn.execute("GRANT USAGE ON SCHEMA learning TO anomaly_user")
+            await conn.execute("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA learning TO anomaly_user")
+            await conn.execute("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA learning TO anomaly_user")
+
+            logger.info("✅ Esquema learning inicializado correctamente")
+
+            return {
+                "status": "success",
+                "message": "Esquema learning y tablas creadas exitosamente con flujo de trabajo completo."
+            }
+
+    except Exception as e:
+        logger.error(f"Error inicializando esquema learning: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al inicializar el esquema: {str(e)}")
+
+@app.post("/admin/migrate-learning-schema")
+async def migrate_learning_schema():
+    """
+    Migra el esquema learning existente para agregar:
+    - workspace_id como referencia
+    - Campos de flujo de trabajo (status, scope, version_number, etc.)
+    - Nuevas tablas (course_reviews, course_versions, course_notifications)
+    """
+    try:
+        async with db_manager.postgres_pool.acquire() as conn:
+            # Verificar si el schema existe
+            schema_exists = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = 'learning')"
+            )
+
+            if not schema_exists:
+                raise HTTPException(
+                    status_code=404,
+                    detail="El esquema learning no existe. Ejecuta primero POST /admin/init-learning-schema"
+                )
+
+            # Migración workspace_id
+            has_workspace_id = await conn.fetchval("""
+                SELECT EXISTS(SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'learning' AND table_name = 'course_modules' AND column_name = 'workspace_id')
+            """)
+
+            if not has_workspace_id:
+                logger.info("Agregando workspace_id a tablas existentes...")
+                await conn.execute("ALTER TABLE learning.course_modules ADD COLUMN IF NOT EXISTS workspace_id UUID")
+                await conn.execute("ALTER TABLE learning.lesson_progress ADD COLUMN IF NOT EXISTS workspace_id UUID")
+                await conn.execute("ALTER TABLE learning.course_completion ADD COLUMN IF NOT EXISTS workspace_id UUID")
+                await conn.execute("ALTER TABLE learning.exercise_attempts ADD COLUMN IF NOT EXISTS workspace_id UUID")
+                await conn.execute("CREATE INDEX IF NOT EXISTS idx_course_modules_workspace ON learning.course_modules(workspace_id)")
+
+            # Migración campos de flujo de trabajo
+            has_workflow_fields = await conn.fetchval("""
+                SELECT EXISTS(SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'learning' AND table_name = 'course_modules' AND column_name = 'status')
+            """)
+
+            if not has_workflow_fields:
+                logger.info("Agregando campos de flujo de trabajo a course_modules...")
+                await conn.execute("ALTER TABLE learning.course_modules ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'draft'")
+                await conn.execute("ALTER TABLE learning.course_modules ADD COLUMN IF NOT EXISTS scope VARCHAR(20) DEFAULT 'project'")
+                await conn.execute("ALTER TABLE learning.course_modules ADD COLUMN IF NOT EXISTS version_number INT DEFAULT 1")
+                await conn.execute("ALTER TABLE learning.course_modules ADD COLUMN IF NOT EXISTS created_by UUID")
+                await conn.execute("ALTER TABLE learning.course_modules ADD COLUMN IF NOT EXISTS reviewed_by UUID")
+                await conn.execute("ALTER TABLE learning.course_modules ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP")
+                await conn.execute("ALTER TABLE learning.course_modules ADD COLUMN IF NOT EXISTS published_at TIMESTAMP")
+                await conn.execute("ALTER TABLE learning.course_modules ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP")
+                await conn.execute("ALTER TABLE learning.course_modules ADD COLUMN IF NOT EXISTS rejection_reason TEXT")
+                await conn.execute("ALTER TABLE learning.course_modules ADD COLUMN IF NOT EXISTS change_description TEXT")
+
+                # Make project_id nullable for workspace-scoped courses
+                await conn.execute("ALTER TABLE learning.course_modules ALTER COLUMN project_id DROP NOT NULL")
+
+            # Campo is_dynamic en course_lessons
+            has_dynamic_field = await conn.fetchval("""
+                SELECT EXISTS(SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'learning' AND table_name = 'course_lessons' AND column_name = 'is_dynamic')
+            """)
+
+            if not has_dynamic_field:
+                logger.info("Agregando campo is_dynamic a course_lessons...")
+                await conn.execute("ALTER TABLE learning.course_lessons ADD COLUMN IF NOT EXISTS is_dynamic BOOLEAN DEFAULT FALSE")
+                # Make content nullable for dynamic lessons
+                await conn.execute("ALTER TABLE learning.course_lessons ALTER COLUMN content DROP NOT NULL")
+
+            # Crear nuevas tablas
+            logger.info("Creando nuevas tablas de flujo de trabajo...")
+
+            # Tabla course_reviews
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS learning.course_reviews (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    course_id UUID NOT NULL,
+                    reviewer_id UUID NOT NULL,
+                    status VARCHAR(20) NOT NULL,
+                    comments TEXT,
+                    reviewed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    version_number INT NOT NULL
+                )
+            """)
+
+            # Tabla course_versions
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS learning.course_versions (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    course_module_id UUID NOT NULL,
+                    version_number INT NOT NULL,
+                    title VARCHAR(255) NOT NULL,
+                    description TEXT,
+                    created_by UUID,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    change_description TEXT,
+                    UNIQUE(course_module_id, version_number)
+                )
+            """)
+
+            # Tabla course_notifications
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS learning.course_notifications (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    workspace_id UUID NOT NULL,
+                    user_id UUID NOT NULL,
+                    course_id UUID,
+                    type VARCHAR(50) NOT NULL,
+                    is_read BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Tabla lesson_change_history
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS learning.lesson_change_history (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    lesson_id UUID NOT NULL,
+                    changed_by UUID NOT NULL,
+                    changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    change_type VARCHAR(50) NOT NULL,
+                    change_description TEXT,
+                    old_value TEXT,
+                    new_value TEXT,
+                    is_minor_edit BOOLEAN DEFAULT FALSE
+                )
+            """)
+
+            # Crear índices
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_course_reviews_course ON learning.course_reviews(course_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_course_versions_module ON learning.course_versions(course_module_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_course_notifications_workspace ON learning.course_notifications(workspace_id, user_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_course_notifications_unread ON learning.course_notifications(user_id, is_read)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_lesson_change_history_lesson ON learning.lesson_change_history(lesson_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_lesson_change_history_changed_by ON learning.lesson_change_history(changed_by)")
+
+            logger.info("✅ Esquema learning migrado correctamente")
+
+            return {
+                "status": "success",
+                "message": "Esquema learning migrado con nuevos campos de flujo de trabajo y tablas."
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error migrando esquema learning: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al migrar el esquema: {str(e)}")
+
 @app.post("/process", response_model=ProcessResponseV2)
-async def process_file(file: UploadFile = File(...)):
+async def process_file(
+    file: UploadFile = File(...),
+    project_id: str = None
+):
     """
     Procesar archivo usando arquitectura multi-DB con servicios refactorizados.
     Usa ExplanationService con Ollama Cloud para generar explicaciones.
@@ -152,8 +519,8 @@ async def process_file(file: UploadFile = File(...)):
                     detail=f"Este archivo ya fue procesado anteriormente (ID: {existing['id']}, fecha: {existing['created_at']}). Usa el botón 'Re-analizar' en el historial o elimina el reporte anterior primero."
                 )
 
-        # Crear chunks y job (pasar file_hash para detección de duplicados)
-        file_id = await chunk_service.create_chunks_from_file(file_content, file.filename, file_hash)
+        # Crear chunks y job (pasar file_hash y project_id)
+        file_id = await chunk_service.create_chunks_from_file(file_content, file.filename, file_hash, project_id)
         logger.info(f"✅ Chunks creados para archivo {file.filename}, file_id: {file_id}")
 
         # Guardar contenido original del archivo para posible re-análisis
@@ -373,8 +740,16 @@ async def reanalyze_job(job_id: str):
         filename = raw_file.get("filename", "unknown")
         original_hash = raw_file.get("file_hash", "")
 
+        # Obtener project_id del job original
+        async with db_manager.postgres_pool.acquire() as conn:
+            original_job = await conn.fetchrow(
+                "SELECT project_id FROM processing.processing_jobs WHERE id = $1",
+                job_id
+            )
+        project_id = original_job["project_id"] if original_job else None
+
         # Crear chunks y job (esto generará un nuevo file_id)
-        new_job_id = await chunk_service.create_chunks_from_file(file_content, filename, original_hash)
+        new_job_id = await chunk_service.create_chunks_from_file(file_content, filename, original_hash, project_id)
         logger.info(f"✅ Chunks creados para re-análisis {filename}, job_id: {new_job_id}")
 
         # Guardar contenido original con el nuevo job_id para futuros re-análisis

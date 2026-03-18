@@ -9,6 +9,37 @@ from config.database import db_manager
 logger = logging.getLogger(__name__)
 
 
+async def check_user_permission(
+    user_id: UUID,
+    workspace_id: UUID,
+    permission: str
+) -> bool:
+    """
+    Verifica si un usuario tiene un permiso específico en un workspace.
+    El permiso debe estar en formato 'module:action' (ej: 'users:manage').
+
+    Args:
+        user_id: ID del usuario
+        workspace_id: ID del workspace
+        permission: Permiso en formato 'module:action'
+
+    Returns:
+        True si el usuario tiene el permiso, False en caso contrario
+    """
+    try:
+        # Parse permission string
+        parts = permission.split(":")
+        if len(parts) != 2:
+            logger.warning(f"Permiso inválido: {permission}")
+            return False
+
+        module, action = parts
+        return await check_workspace_permission(user_id, workspace_id, module, action)
+    except Exception as e:
+        logger.error(f"Error verificando permiso de usuario: {e}")
+        return False
+
+
 async def check_permission(
     user_id: UUID,
     project_id: UUID,
@@ -232,7 +263,7 @@ async def get_user_project_permissions(user_id: UUID, project_id: UUID) -> dict:
                 SELECT DISTINCT
                     r.id as role_id,
                     r.name as role_name,
-                    p.module as permission_module,
+                    p.module_id as permission_module,
                     p.action as permission_action
                 FROM auth.roles r
                 JOIN auth.role_permissions rp ON r.id = rp.role_id

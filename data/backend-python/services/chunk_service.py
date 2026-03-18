@@ -16,8 +16,8 @@ from models.v2_models import ChunkData, ProcessingJob, ProcessingStats
 class ChunkService:
     def __init__(self):
         self.chunk_size = 1024 * 1024  # 1MB
-    
-    async def create_chunks_from_file(self, file_content: str, filename: str, file_hash: str = None) -> str:
+
+    async def create_chunks_from_file(self, file_content: str, filename: str, file_hash: str = None, project_id: str = None) -> str:
         """Divide el archivo en chunks y los guarda en MongoDB"""
         file_id = str(uuid.uuid4())
 
@@ -69,9 +69,9 @@ class ChunkService:
 
         async with db_manager.postgres_pool.acquire() as conn:
             await conn.execute("""
-                INSERT INTO processing.processing_jobs (id, filename, total_size, total_chunks, status, file_hash)
-                VALUES ($1, $2, $3, $4, $5, $6)
-            """, job.id, job.filename, job.total_size, job.total_chunks, job.status, file_hash)
+                INSERT INTO processing.processing_jobs (id, filename, total_size, total_chunks, status, file_hash, project_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """, job.id, job.filename, job.total_size, job.total_chunks, job.status, file_hash, project_id)
 
         return file_id
     

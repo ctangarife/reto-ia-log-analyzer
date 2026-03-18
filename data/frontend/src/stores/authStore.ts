@@ -51,6 +51,8 @@ export const useAuthStore = defineStore('auth', () => {
   const workspaces = ref<Workspace[]>([])
   const projects = ref<Record<string, Project[]>>({}) // workspace_id -> projects
   const projectPermissions = ref<Record<string, string[]>>({}) // project_id -> permissions
+  const coursePermissions = ref<Record<string, string[]>>({}) // workspace_id -> learning permissions
+  const courseRoles = ref<Record<string, string[]>>({}) // workspace_id -> roles
   const isLoading = ref(false)
   const selectedWorkspaceId = ref<string | null>(null)
   const selectedProjectId = ref<string | null>(null)
@@ -169,6 +171,9 @@ export const useAuthStore = defineStore('auth', () => {
         await loadProjectPermissions(project.project_id)
       }
 
+      // Cargar permisos de cursos del workspace
+      await loadCoursePermissions(workspaceId)
+
       // Si no hay proyecto seleccionado y hay proyectos disponibles, seleccionar el primero
       if (!selectedProjectId.value && response.data.length > 0) {
         selectedProjectId.value = response.data[0].project_id
@@ -187,6 +192,47 @@ export const useAuthStore = defineStore('auth', () => {
       console.error('Error cargando permisos del proyecto:', error)
       projectPermissions.value[projectId] = []
     }
+  }
+
+  async function loadCoursePermissions(workspaceId: string): Promise<void> {
+    try {
+      const response = await api.get<{ permissions: string[]; roles: Array<{ id: string; name: string }> }>(
+        `/workspaces/${workspaceId}/course-permissions`
+      )
+      coursePermissions.value[workspaceId] = response.data.permissions
+      courseRoles.value[workspaceId] = response.data.roles?.map(r => r.name) || []
+    } catch (error) {
+      console.error('Error cargando permisos de cursos:', error)
+      coursePermissions.value[workspaceId] = []
+      courseRoles.value[workspaceId] = []
+    }
+  }
+
+  function getCoursePermissions(workspaceId?: string): string[] {
+    const targetWorkspaceId = workspaceId || selectedWorkspaceId.value
+    if (!targetWorkspaceId) return []
+    // Super admin tiene todos los permisos
+    if (isSuperAdmin.value) {
+      return [
+        'learning:create',
+        'learning:edit',
+        'learning:edit_own',
+        'learning:edit_lessons',
+        'learning:minor_edit',
+        'learning:review',
+        'learning:delete',
+        'learning:publish',
+        'learning:view_draft',
+        'learning:view_pending'
+      ]
+    }
+    return coursePermissions.value[targetWorkspaceId] || []
+  }
+
+  function getCourseRoles(workspaceId?: string): string[] {
+    const targetWorkspaceId = workspaceId || selectedWorkspaceId.value
+    if (!targetWorkspaceId) return []
+    return courseRoles.value[targetWorkspaceId] || []
   }
 
   async function selectWorkspace(workspaceId: string): Promise<void> {
@@ -276,6 +322,8 @@ export const useAuthStore = defineStore('auth', () => {
     workspaces,
     projects,
     projectPermissions,
+    coursePermissions,
+    courseRoles,
     isLoading,
     selectedWorkspaceId,
     selectedProjectId,
@@ -294,6 +342,7 @@ export const useAuthStore = defineStore('auth', () => {
     loadWorkspaces,
     loadProjects,
     loadProjectPermissions,
+    loadCoursePermissions,
     selectWorkspace,
     selectProject,
 
@@ -302,10 +351,12 @@ export const useAuthStore = defineStore('auth', () => {
     canProcessLogsInProject,
     canViewReportsInProject,
     canAccessMonitoringDashboard,
+    getCoursePermissions,
+    getCourseRoles,
 
     // Inicialización
     initialize,
-    
+
     // Refresh
     refreshWorkspaces
   }

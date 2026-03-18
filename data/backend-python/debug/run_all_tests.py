@@ -51,6 +51,9 @@ def main():
         ("test_fallback_explanation", "FallbackExplanationGenerator - Explicaciones de respaldo"),
         ("test_ollama_client", "OllamaClientWrapper - Cliente Ollama Cloud"),
         ("test_explanation_service", "ExplanationService - Servicio completo"),
+        ("test_course_rbac", "CourseRBAC - Sistema de permisos de cursos"),
+        ("test_course_generation", "CourseGeneration - Generación de cursos"),
+        ("test_lesson_edit", "LessonEdit - Edición granular de lecciones"),
     ]
     
     results = []

@@ -486,3 +486,48 @@ async def remove_workspace_member(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error al remover el usuario del workspace",
         )
+
+
+@router.get("/{workspace_id}/course-permissions")
+async def get_course_permissions(
+    workspace_id: UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Obtiene los permisos de cursos del usuario actual en el workspace.
+
+    Retorna los permisos del módulo de aprendizaje (learning:*) y los roles
+    de curso asignados al usuario en este workspace.
+    """
+    try:
+        from services.course_rbac_service import course_rbac_service
+
+        # Verificar acceso al workspace
+        has_access = await validate_workspace_access(current_user.user_id, workspace_id)
+        if not has_access and not current_user.is_super_admin:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workspace no encontrado o sin acceso",
+            )
+
+        # Obtener roles y permisos de cursos
+        roles = await course_rbac_service.get_user_course_roles(
+            current_user.user_id, workspace_id
+        )
+        permissions_data = await course_rbac_service.get_user_course_permissions(
+            current_user.user_id, workspace_id
+        )
+
+        return {
+            "permissions": permissions_data.get("permissions", []),
+            "roles": roles
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error obteniendo permisos de cursos: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Error al obtener permisos de cursos",
+        )

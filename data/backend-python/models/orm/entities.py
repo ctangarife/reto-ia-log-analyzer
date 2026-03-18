@@ -39,6 +39,7 @@ class ProcessingJob(OrmBase):
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    project_id: Mapped[Optional[Any]] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
 
     stats: Mapped[List["ProcessingStat"]] = relationship("ProcessingStat", back_populates="job")
 

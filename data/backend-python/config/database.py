@@ -9,6 +9,14 @@ class DatabaseManager:
         self.mongodb_client: Optional[AsyncIOMotorClient] = None
         self.postgres_pool: Optional[asyncpg.Pool] = None
         self.redis_client: Optional[redis.Redis] = None
+
+    @property
+    def mongodb_db(self):
+        """Get the MongoDB database instance"""
+        if self.mongodb_client is None:
+            raise RuntimeError("MongoDB client is not connected. Call connect_mongodb() first.")
+        mongodb_name = os.getenv("MONGODB_DB", "logsanomaly")
+        return self.mongodb_client[mongodb_name]
     
     async def connect_mongodb(self):
         mongodb_uri = os.getenv("MONGODB_URI", "mongodb://admin:password@mongodb:27017/logsanomaly?authSource=admin")
@@ -38,10 +46,10 @@ class DatabaseManager:
             password=postgres_password,
             database=postgres_db,
             server_settings={
-                'search_path': 'auth,processing,public'
+                'search_path': 'auth,processing,learning,public'
             }
         )
-        print("✅ PostgreSQL conectado (schemas: auth, processing, public)")
+        print("✅ PostgreSQL conectado (schemas: auth, processing, learning, public)")
     
     async def connect_redis(self):
         redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")

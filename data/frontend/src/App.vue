@@ -74,6 +74,15 @@
         Historia
       </button>
       <button
+        class="nav-item"
+        :class="{ active: mainView === 'learning', disabled: !authStore.selectedProjectId }"
+        @click="authStore.selectedProjectId && (mainView = 'learning')"
+        :disabled="!authStore.selectedProjectId"
+      >
+        <i class="pi pi-book"></i>
+        Aprender
+      </button>
+      <button
         v-if="authStore.isSuperAdmin"
         class="nav-item"
         :class="{ active: mainView === 'admin' }"
@@ -247,6 +256,36 @@
         <AnalysisHistory v-else compact @view-details="handleViewDetails" />
       </div>
 
+      <!-- Vista: APRENDER -->
+      <div v-if="mainView === 'learning'" class="view-container learning-view">
+        <div class="learning-header">
+          <h2>Curso de Análisis de Logs</h2>
+          <div v-if="authStore.selectedProjectId" class="project-badge">
+            <i class="pi pi-folder"></i>
+            {{ getProjectName(authStore.selectedProjectId) }}
+          </div>
+        </div>
+
+        <div v-if="!authStore.selectedProjectId" class="empty-selection">
+          <i class="pi pi-folder-open text-4xl"></i>
+          <p>Selecciona un proyecto para acceder al curso</p>
+        </div>
+
+        <div v-else class="learning-content">
+          <!-- Widget de gestión de cursos (para creadores y revisores) -->
+          <CourseManagementWidget
+            v-if="canManageCourses"
+            :projectId="authStore.selectedProjectId"
+            :workspaceId="authStore.selectedWorkspaceId"
+            :workspaceUsers="workspaceUsers"
+            @course-generated="onCourseGenerated"
+            @course-actioned="onCourseActioned"
+          />
+
+          <LearningView ref="learningViewRef" :project-id="authStore.selectedProjectId" />
+        </div>
+      </div>
+
       <!-- Vista: ADMINISTRACIÓN -->
       <div v-if="mainView === 'admin' && authStore.isSuperAdmin" class="view-container admin-view">
         <div class="admin-tabs">
@@ -296,6 +335,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useAnalysisStore } from './stores/analysisStore'
 import { useAuthStore } from './stores/authStore'
+import { useCourseStore } from './stores/courseStore'
 import AnalysisHistory from './components/AnalysisHistory.vue'
 import ProcessingV2 from './components/ProcessingV2.vue'
 import Login from './components/Login.vue'
@@ -303,6 +343,8 @@ import Register from './components/Register.vue'
 import WorkspaceManagement from './components/WorkspaceManagement.vue'
 import ProjectManagement from './components/ProjectManagement.vue'
 import UserManagement from './components/UserManagement.vue'
+import LearningView from './components/LearningView.vue'
+import CourseManagementWidget from './components/CourseManagementWidget.vue'
 import FileUpload from 'primevue/fileupload'
 import ProgressSpinner from 'primevue/progressspinner'
 import Dropdown from 'primevue/dropdown'
@@ -319,9 +361,10 @@ import Paginator from 'primevue/paginator'
 
 const store = useAnalysisStore()
 const authStore = useAuthStore()
+const courseStore = useCourseStore()
 
 // Estado de navegación
-const mainView = ref<'analysis' | 'history' | 'admin'>('analysis')
+const mainView = ref<'analysis' | 'history' | 'learning' | 'admin'>('analysis')
 const adminTab = ref<'workspaces' | 'projects' | 'users'>('workspaces')
 const showRegister = ref(false)
 
@@ -340,6 +383,17 @@ const availableProjects = computed(() => {
   if (!authStore.selectedWorkspaceId) return []
   return authStore.projects[authStore.selectedWorkspaceId] || []
 })
+
+// Permisos de cursos
+const canManageCourses = computed(() => {
+  return courseStore.canGenerateCourse || courseStore.canReviewCourses
+})
+
+// Usuarios del workspace para gestión de roles
+const workspaceUsers = ref<Array<{ id: string; email: string; first_name?: string; last_name?: string }>>([])
+
+// Ref para el componente de aprendizaje
+const learningViewRef = ref()
 
 // Handlers
 async function onWorkspaceChange() {
@@ -421,6 +475,17 @@ async function handleViewDetails(analysis: any) {
 
   // Resetear paginación
   currentPage.value = 0
+}
+
+// Handlers de gestión de cursos
+async function onCourseGenerated() {
+  // Recargar progreso del curso
+  await learningViewRef.value?.loadCourseProgress()
+}
+
+function onCourseActioned() {
+  // Curso fue aprobado/rechazado
+  console.log('Acción de curso completada')
 }
 
 // Paginación de anomalías
@@ -547,6 +612,16 @@ onMounted(async () => {
 .nav-item.active {
   color: #3b82f6;
   border-bottom-color: #3b82f6;
+}
+
+.nav-item.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.nav-item.disabled:hover {
+  color: #64748b;
+  background: transparent;
 }
 
 /* Contenido principal */
@@ -794,6 +869,30 @@ onMounted(async () => {
   padding: 1.5rem;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   flex: 1;
+}
+
+/* Vista Aprender */
+.learning-view {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.learning-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.learning-header h2 {
+  margin: 0;
+  color: #1e293b;
+}
+
+.learning-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
 }
 
 /* Estados vacíos */
