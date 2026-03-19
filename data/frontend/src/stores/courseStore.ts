@@ -64,19 +64,21 @@ export const useCourseStore = defineStore('course', () => {
   const userPermissions = computed(() => {
     if (authStore.isSuperAdmin) {
       return [
-        'learning:create',
-        'learning:edit',
-        'learning:edit_own',
-        'learning:edit_lessons',
-        'learning:minor_edit',
-        'learning:review',
-        'learning:delete',
-        'learning:publish',
-        'learning:view_draft',
-        'learning:view_pending'
+        'courses:create',
+        'courses:edit',
+        'courses:edit_own',
+        'courses:edit_lessons',
+        'courses:minor_edit',
+        'courses:review',
+        'courses:delete',
+        'courses:publish',
+        'courses:view_draft',
+        'courses:view_pending'
       ]
     }
-    return authStore.getCoursePermissions?.() || []
+    // Transform learning: permissions to courses: permissions for compatibility
+    const rawPerms = authStore.getCoursePermissions?.() || []
+    return rawPerms.map((p: string) => p.replace('learning:', 'courses:'))
   })
 
   const userRoles = computed(() => {
@@ -84,20 +86,20 @@ export const useCourseStore = defineStore('course', () => {
   })
 
   const canGenerateCourse = computed(() => {
-    return userPermissions.value.includes('learning:create')
+    return userPermissions.value.includes('courses:create')
   })
 
   const canReviewCourses = computed(() => {
-    return userPermissions.value.includes('learning:review')
+    return userPermissions.value.includes('courses:review')
   })
 
   const canEditCourses = computed(() => {
-    return userPermissions.value.includes('learning:edit') ||
-           userPermissions.value.includes('learning:edit_own')
+    return userPermissions.value.includes('courses:edit') ||
+           userPermissions.value.includes('courses:edit_own')
   })
 
   const canMinorEdit = computed(() => {
-    return userPermissions.value.includes('learning:minor_edit')
+    return userPermissions.value.includes('courses:minor_edit')
   })
 
   const isCourseCreator = computed(() => {

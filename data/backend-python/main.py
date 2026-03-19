@@ -1010,6 +1010,82 @@ async def get_reports():
         logger.error(f"Error obteniendo reportes desde BD: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/reports/{job_id}")
+async def get_report_by_id(job_id: str):
+    """Obtener un reporte específico por su ID
+
+    Este endpoint permite cargar un análisis específico directamente por su ID,
+    sin necesidad de especificar el proyecto. Útil para cuando se accede
+    directamente a una vista de detalles (ej. al recargar la página).
+    """
+    try:
+        # Buscar el job específico
+        async with db_manager.postgres_pool.acquire() as conn:
+            job = await conn.fetchrow("""
+                SELECT * FROM processing.processing_jobs
+                WHERE id = $1 AND status = 'completed'
+            """, job_id)
+
+        if not job:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Análisis con ID '{job_id}' no encontrado o no está completado"
+            )
+
+        # Obtener chunks del job
+        chunks = await db_manager.mongodb_client.logsanomaly.chunks.find({
+            "file_id": str(job_id)
+        }).to_list(length=None)
+
+        if not chunks:
+            logger.warning(f"No se encontraron chunks para el job {job_id}")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Análisis encontrado pero no tiene datos asociados"
+            )
+
+        # Obtener resultados de anomalías
+        chunk_ids = [str(chunk["_id"]) for chunk in chunks]
+        results = await db_manager.mongodb_client.logsanomaly.results.find({
+            "chunk_id": {"$in": chunk_ids}
+        }).to_list(length=None)
+
+        # Agregar anomalías de todos los chunks
+        all_anomalies = []
+        for result in results:
+            if "anomalies" in result:
+                all_anomalies.extend(result["anomalies"])
+
+        # Calcular estadísticas
+        total_logs = sum(len(chunk.get("data", "").split('\n')) for chunk in chunks)
+        anomalies_detected = len(all_anomalies)
+        chunks_processed = len([chunk for chunk in chunks if chunk.get("processed", False)])
+
+        # Crear reporte
+        report = {
+            "id": str(job_id),
+            "timestamp": job["completed_at"].isoformat() if job["completed_at"] else job["started_at"].isoformat(),
+            "fileName": job["filename"],
+            "total_logs": total_logs,
+            "anomalies_detected": anomalies_detected,
+            "anomalies": all_anomalies,
+            "report_file": f"db_report_{job_id}.json",
+            "file_id": str(job_id),
+            "status": job["status"],
+            "total_chunks": job["total_chunks"],
+            "chunks_processed": chunks_processed,
+            "project_id": job.get("project_id")  # Incluir project_id para referencia
+        }
+
+        logger.info(f"Retornando reporte específico para job_id={job_id}")
+        return report
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error obteniendo reporte {job_id} desde BD: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # === ENDPOINTS DE MONITOREO ===
 
 @app.get("/monitoring/status")

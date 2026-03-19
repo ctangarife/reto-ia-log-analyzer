@@ -54,6 +54,7 @@ export const useAuthStore = defineStore('auth', () => {
   const coursePermissions = ref<Record<string, string[]>>({}) // workspace_id -> learning permissions
   const courseRoles = ref<Record<string, string[]>>({}) // workspace_id -> roles
   const isLoading = ref(false)
+  const isInitialized = ref(false) // Nuevo: indica si la inicialización desde localStorage terminó
   const selectedWorkspaceId = ref<string | null>(null)
   const selectedProjectId = ref<string | null>(null)
 
@@ -298,8 +299,8 @@ export const useAuthStore = defineStore('auth', () => {
     return false
   }
 
-  // Inicializar desde localStorage si existe token
-  function initialize(): void {
+  // Inicializar desde localStorage si existe token (async para que el guard pueda esperar)
+  async function initialize(): Promise<void> {
     const storedToken = localStorage.getItem('auth_token')
     const storedUser = localStorage.getItem('user_info')
 
@@ -307,12 +308,15 @@ export const useAuthStore = defineStore('auth', () => {
       token.value = storedToken
       try {
         user.value = JSON.parse(storedUser)
-        loadUserData()
+        await loadUserData()
       } catch (error) {
         console.error('Error parseando usuario almacenado:', error)
         logoutUser()
       }
     }
+
+    // Marcar como inicializado sin importar el resultado
+    isInitialized.value = true
   }
 
   return {
@@ -325,6 +329,7 @@ export const useAuthStore = defineStore('auth', () => {
     coursePermissions,
     courseRoles,
     isLoading,
+    isInitialized,
     selectedWorkspaceId,
     selectedProjectId,
 

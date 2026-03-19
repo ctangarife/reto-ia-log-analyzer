@@ -28,8 +28,8 @@ export const jobService = {
     return response.data
   },
 
-  async getJobDetails(jobId: string): Promise<JobResult> {
-    const response = await api.get(`/jobs/${jobId}`)
+  async getJobDetails(jobId: string): Promise<any> {
+    const response = await api.get(`/reports/${jobId}`)
     return response.data
   },
 

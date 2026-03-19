@@ -121,16 +121,14 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { registerUser } from '../services/authService'
 import InputText from 'primevue/inputtext'
 import Password from 'primevue/password'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 
-const emit = defineEmits<{
-  (e: 'go-to-login'): void
-  (e: 'registered'): void
-}>()
+const router = useRouter()
 
 const email = ref('')
 const username = ref('')
@@ -244,7 +242,7 @@ async function handleRegister() {
 }
 
 function goToLogin() {
-  emit('go-to-login')
+  router.push({ name: 'login' })
 }
 </script>
 

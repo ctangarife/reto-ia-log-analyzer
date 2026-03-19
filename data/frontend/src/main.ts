@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
+import router from './router'
 import PrimeVue from 'primevue/config'
 
 // PrimeVue components
@@ -18,11 +19,20 @@ import Textarea from 'primevue/textarea'
 import Checkbox from 'primevue/checkbox'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
+import ColumnGroup from 'primevue/columngroup'
+import Row from 'primevue/row'
 import Tag from 'primevue/tag'
 import ConfirmDialog from 'primevue/confirmdialog'
 import Toast from 'primevue/toast'
 import ToastService from 'primevue/toastservice'
 import ConfirmationService from 'primevue/confirmationservice'
+import Accordion from 'primevue/accordion'
+import AccordionTab from 'primevue/accordiontab'
+import Divider from 'primevue/divider'
+import ProgressBar from 'primevue/progressbar'
+import Paginator from 'primevue/paginator'
+import RouterLink from 'primevue/routerlink'
+import Tooltip from 'primevue/tooltip'
 
 // PrimeVue styles
 import 'primevue/resources/themes/lara-light-blue/theme.css'
@@ -33,10 +43,12 @@ const app = createApp(App)
 const pinia = createPinia()
 
 // Use plugins
-app.use(PrimeVue)
+app.use(PrimeVue, { ripple: true })
 app.use(pinia)
+app.use(router)
 app.use(ToastService)
 app.use(ConfirmationService)
+app.use(Tooltip)
 
 // Register PrimeVue components
 app.component('FileUpload', FileUpload)
@@ -53,8 +65,15 @@ app.component('Textarea', Textarea)
 app.component('Checkbox', Checkbox)
 app.component('DataTable', DataTable)
 app.component('Column', Column)
+app.component('ColumnGroup', ColumnGroup)
+app.component('Row', Row)
 app.component('Tag', Tag)
 app.component('ConfirmDialog', ConfirmDialog)
 app.component('Toast', Toast)
+app.component('Accordion', Accordion)
+app.component('AccordionTab', AccordionTab)
+app.component('Divider', Divider)
+app.component('ProgressBar', ProgressBar)
+app.component('Paginator', Paginator)
 
 app.mount('#app')

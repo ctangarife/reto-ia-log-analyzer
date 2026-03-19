@@ -63,16 +63,14 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/authStore'
 import InputText from 'primevue/inputtext'
 import Password from 'primevue/password'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 
-const emit = defineEmits<{
-  (e: 'go-to-register'): void
-}>()
-
+const router = useRouter()
 const authStore = useAuthStore()
 
 const username = ref('')
@@ -93,7 +91,7 @@ async function handleLogin() {
     await authStore.loginUser(username.value, password.value)
 
     // Redirigir a la aplicación principal
-    window.location.href = '/'
+    router.push({ name: 'analysis' })
   } catch (error: any) {
     errorMessage.value = error.message || 'Error al iniciar sesión. Verifica tus credenciales.'
   } finally {
@@ -102,7 +100,7 @@ async function handleLogin() {
 }
 
 function goToRegister() {
-  emit('go-to-register')
+  router.push({ name: 'register' })
 }
 </script>
 

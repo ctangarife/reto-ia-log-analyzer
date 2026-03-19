@@ -160,14 +160,14 @@ watch(() => authStore.selectedProjectId, async (newProjectId) => {
 }, { immediate: true })
 
 async function viewDetails(analysis: any) {
-  // Emitir evento al componente padre
+  // Emitir evento al componente padre (opcional, para compatibilidad)
   emit('viewDetails', analysis)
 
-  // También actualizar en el store
+  // Actualizar en el store
   setCurrentAnalysis(analysis)
 
-  // Navegar a la vista de análisis
-  router.push({ name: 'analysis' })
+  // Navegar a la vista de detalle de análisis
+  router.push({ name: 'analysis-detail', params: { id: analysis.id } })
 }
 
 async function deleteAnalysis(analysis: any) {
