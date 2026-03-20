@@ -185,15 +185,73 @@
     />
 
     <!-- Course Content Preview Dialog -->
-    <Dialog v-model:visible="showContentDialog" modal header="Contenido del Curso" :style="{ width: '80vw' }">
+    <Dialog
+      v-model:visible="showContentDialog"
+      modal
+      header="Contenido del Curso"
+      :style="{ maxWidth: '1200px' }"
+      :contentStyle="{ maxHeight: '80vh', overflow: 'auto' }"
+    >
       <div v-if="loadingContent" class="flex justify-content-center p-4">
         <ProgressSpinner />
       </div>
       <div v-else-if="courseContent" class="course-content">
         <div class="course-header mb-3">
-          <h3>{{ courseContent.course.name }}</h3>
-          <p class="text-color-secondary">{{ courseContent.course.description }}</p>
-          <div class="flex gap-2 mt-2">
+          <div class="flex justify-content-between align-items-start">
+            <div class="flex-1">
+              <!-- Course Name with Inline Edit -->
+              <div class="flex align-items-center gap-2">
+                <h3 v-if="!editingCourseName" @click="startEditingCourseName" class="editable hover-highlight">
+                  {{ courseContent.course.name }}
+                </h3>
+                <InputText
+                  v-else
+                  v-model="editedCourseName"
+                  @blur="saveCourseName"
+                  @keyup.enter="saveCourseName"
+                  @keyup.esc="cancelCourseNameEdit"
+                  ref="courseNameInput"
+                  class="course-name-input"
+                />
+                <Button
+                  v-if="!editingCourseName && canEditCourse"
+                  icon="pi pi-pencil"
+                  text
+                  rounded
+                  size="small"
+                  @click="startEditingCourseName"
+                  title="Editar nombre"
+                />
+              </div>
+
+              <!-- Course Description with Inline Edit -->
+              <div class="flex align-items-start gap-2 mt-2">
+                <p v-if="!editingCourseDesc" @click="startEditingCourseDesc" class="text-color-secondary editable hover-highlight m-0">
+                  {{ courseContent.course.description || 'Sin descripción' }}
+                </p>
+                <Textarea
+                  v-else
+                  v-model="editedCourseDesc"
+                  @blur="saveCourseDesc"
+                  rows="2"
+                  cols="60"
+                  class="course-desc-input"
+                  ref="courseDescInput"
+                />
+                <Button
+                  v-if="!editingCourseDesc && canEditCourse"
+                  icon="pi pi-pencil"
+                  text
+                  rounded
+                  size="small"
+                  @click="startEditingCourseDesc"
+                  title="Editar descripción"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div class="flex gap-2 mt-3">
             <Badge :value="courseContent.course.status" :severity="getStatusSeverity(courseContent.course.status)" />
             <Badge :value="courseContent.course.scope" severity="secondary" />
             <Badge :value="`${courseContent.modules.length} módulos`" severity="info" />
@@ -234,15 +292,25 @@
                       <i v-else class="pi pi-times text-color-secondary" title="Sin ejercicio" />
                     </template>
                   </Column>
-                  <Column header="Contenido" style="width: 100px">
+                  <Column header="Contenido" style="width: 150px">
                     <template #body="slotProps">
-                      <Button
-                        icon="pi pi-eye"
-                        size="small"
-                        outlined
-                        @click="previewLesson(slotProps.data)"
-                        title="Ver contenido"
-                      />
+                      <div class="flex gap-1">
+                        <Button
+                          icon="pi pi-eye"
+                          size="small"
+                          outlined
+                          @click="previewLesson(slotProps.data)"
+                          title="Ver contenido"
+                        />
+                        <Button
+                          icon="pi pi-pencil"
+                          size="small"
+                          outlined
+                          severity="primary"
+                          @click="editLesson(slotProps.data)"
+                          title="Editar lección"
+                        />
+                      </div>
                     </template>
                   </Column>
                 </DataTable>
@@ -257,12 +325,28 @@
     </Dialog>
 
     <!-- Lesson Content Preview Dialog -->
-    <Dialog v-model:visible="showLessonDialog" modal :header="currentLesson?.title" :style="{ width: '60vw' }">
+    <Dialog
+      v-model:visible="showLessonDialog"
+      modal
+      :header="currentLesson?.title"
+      :style="{ maxWidth: '900px' }"
+      :contentStyle="{ maxHeight: '70vh', overflow: 'auto' }"
+    >
       <div v-if="currentLesson" class="lesson-content">
-        <div class="lesson-metadata mb-3">
-          <Chip :label="`Orden: ${currentLesson.lesson_order}`" size="small" class="mr-2" />
-          <Chip v-if="currentLesson.is_dynamic" label="Dinámica" size="small" severity="warning" />
-          <Chip v-else label="Estática" size="small" severity="secondary" />
+        <div class="flex justify-content-between align-items-center mb-3">
+          <div class="lesson-metadata">
+            <Chip :label="`Orden: ${currentLesson.lesson_order}`" size="small" class="mr-2" />
+            <Chip v-if="currentLesson.is_dynamic" label="Dinámica" size="small" severity="warning" />
+            <Chip v-else label="Estática" size="small" severity="secondary" />
+          </div>
+          <Button
+            icon="pi pi-pencil"
+            label="Editar lección"
+            size="small"
+            severity="primary"
+            @click="editLesson(currentLesson)"
+            outlined
+          />
         </div>
         <div class="lesson-body" v-html="renderMarkdown(currentLesson.content)"></div>
         <div v-if="currentLesson.exercise_data" class="exercise-info mt-3 p-3">
@@ -272,13 +356,21 @@
       </div>
     </Dialog>
 
+    <!-- Lesson Edit Dialog -->
+    <LessonEditDialog
+      v-model:visible="showLessonEditDialog"
+      :lessonId="editingLessonId"
+      @saved="onLessonEditSaved"
+      @closed="editingLessonId = undefined"
+    />
+
     <!-- Toast for notifications -->
     <Toast />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import Button from 'primevue/button'
 import Toast from 'primevue/toast'
 import Card from 'primevue/card'
@@ -290,11 +382,14 @@ import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import Chip from 'primevue/chip'
 import ProgressSpinner from 'primevue/progressspinner'
+import InputText from 'primevue/inputtext'
+import Textarea from 'primevue/textarea'
 
 import { useCourseStore } from '@/stores/courseStore'
 import CourseGenerateDialog from './CourseGenerateDialog.vue'
 import CourseReviewPanel from './CourseReviewPanel.vue'
 import CourseRoleManager from './CourseRoleManager.vue'
+import LessonEditDialog from './LessonEditDialog.vue'
 import { useToast } from 'primevue/usetoast'
 import { courseGenerationService, type CourseContent } from '@/services/courseGenerationService'
 import DOMPurify from 'dompurify'
@@ -342,7 +437,20 @@ const activeModuleIndex = ref<number[]>([])
 const showLessonDialog = ref(false)
 const currentLesson = ref<CourseContent['lessons'][0] | null>(null)
 
+// Lesson edit dialog
+const showLessonEditDialog = ref(false)
+const editingLessonId = ref<string | undefined>(undefined)
+
+// Course inline editing state
+const editingCourseName = ref(false)
+const editingCourseDesc = ref(false)
+const editedCourseName = ref('')
+const editedCourseDesc = ref('')
+const courseNameInput = ref()
+const courseDescInput = ref()
+
 const canGenerateCourse = computed(() => courseStore.canGenerateCourse)
+const canEditCourse = computed(() => courseStore.canGenerateCourse || courseStore.canReviewCourses)
 const canReviewCourses = computed(() => courseStore.canReviewCourses)
 
 const loadDraftCourses = async () => {
@@ -412,6 +520,18 @@ const viewCourse = async (course: DraftCourse) => {
 const previewLesson = (lesson: CourseContent['lessons'][0]) => {
   currentLesson.value = lesson
   showLessonDialog.value = true
+}
+
+const editLesson = (lesson: CourseContent['lessons'][0]) => {
+  editingLessonId.value = lesson.id
+  showLessonEditDialog.value = true
+}
+
+const onLessonEditSaved = () => {
+  // Reload course content to show updated lesson
+  if (courseContent.value) {
+    viewCourse({ id: courseContent.value.course.id } as any)
+  }
 }
 
 const getModuleLessonCount = (moduleId: string) => {
@@ -515,6 +635,71 @@ const onRoleAssigned = () => {
 
 const onRoleRemoved = () => {
   toast.add({ severity: 'success', summary: 'Éxito', detail: 'Rol removido', life: 3000 })
+}
+
+// Course inline editing methods
+const startEditingCourseName = async () => {
+  if (!courseContent.value) return
+  editedCourseName.value = courseContent.value.course.name
+  editingCourseName.value = true
+  await nextTick()
+  courseNameInput.value?.$el?.focus()
+}
+
+const saveCourseName = async () => {
+  if (!courseContent.value || !editedCourseName.value.trim()) {
+    cancelCourseNameEdit()
+    return
+  }
+
+  try {
+    await courseGenerationService.updateCourse(courseContent.value.course.id, {
+      name: editedCourseName.value.trim()
+    })
+    toast.add({ severity: 'success', summary: 'Éxito', detail: 'Nombre actualizado', life: 3000 })
+    await reloadCourseContent()
+  } catch (e: any) {
+    toast.add({ severity: 'error', summary: 'Error', detail: 'Error al actualizar nombre', life: 3000 })
+  }
+  editingCourseName.value = false
+}
+
+const cancelCourseNameEdit = () => {
+  editingCourseName.value = false
+  editedCourseName.value = ''
+}
+
+const startEditingCourseDesc = async () => {
+  if (!courseContent.value) return
+  editedCourseDesc.value = courseContent.value.course.description || ''
+  editingCourseDesc.value = true
+  await nextTick()
+  courseDescInput.value?.$el?.focus()
+}
+
+const saveCourseDesc = async () => {
+  if (!courseContent.value) return
+
+  try {
+    await courseGenerationService.updateCourse(courseContent.value.course.id, {
+      description: editedCourseDesc.value.trim()
+    })
+    toast.add({ severity: 'success', summary: 'Éxito', detail: 'Descripción actualizada', life: 3000 })
+    await reloadCourseContent()
+  } catch (e: any) {
+    toast.add({ severity: 'error', summary: 'Error', detail: 'Error al actualizar descripción', life: 3000 })
+  }
+  editingCourseDesc.value = false
+}
+
+const reloadCourseContent = async () => {
+  if (!courseContent.value) return
+  try {
+    const content = await courseGenerationService.getCourseContent(courseContent.value.course.id)
+    courseContent.value = content
+  } catch (e: any) {
+    console.error('Error reloading course content:', e)
+  }
 }
 
 // Load draft courses when workspace changes or on mount
@@ -658,5 +843,48 @@ defineExpose({
 
 .text-green-500 {
   color: var(--green-500);
+}
+
+/* Inline editing styles */
+.editable {
+  cursor: pointer;
+  transition: background-color 0.2s;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  display: inline-block;
+}
+
+.editable:hover,
+.hover-highlight:hover {
+  background-color: var(--surface-100);
+}
+
+.course-header h3.editable {
+  margin: 0;
+  display: inline-block;
+}
+
+.course-name-input {
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: var(--primary-color);
+  padding: 0.25rem 0.5rem;
+}
+
+.course-desc-input {
+  resize: both;
+  min-height: 60px;
+}
+
+.flex-1 {
+  flex: 1;
+}
+
+.hover-highlight {
+  border-radius: 4px;
+}
+
+.mt-2 {
+  margin-top: 0.5rem;
 }
 </style>

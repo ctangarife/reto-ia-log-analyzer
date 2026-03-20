@@ -8,7 +8,7 @@ Structure:
 - course_lessons: Children of modules (lessons within a module)
 """
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -419,6 +419,44 @@ class ExerciseValidationResponse(BaseModel):
     feedback: str
     correct_answer: Optional[dict] = None
     explanation: str
+
+
+class FinalExamAnswer(BaseModel):
+    """Single answer in final exam"""
+    anomaly_id: str
+    anomaly_type: str  # Security, Performance, Network, Behavior, General
+    severity: str  # Critical, High, Medium, Low
+    action: str  # User's proposed action (description)
+
+
+class FinalExamSubmissionRequest(BaseModel):
+    """Submit complete final exam with all answers"""
+    lesson_id: UUID
+    answers: List[FinalExamAnswer]
+
+
+class FinalExamAnswerResult(BaseModel):
+    """Result for a single exam answer"""
+    anomaly_id: str
+    log_entry: str
+    user_type: str
+    correct_type: str
+    user_severity: str
+    correct_severity: str
+    is_correct_type: bool
+    is_correct_severity: bool
+    points: int  # 0, 10, or 20
+
+
+class FinalExamValidationResponse(BaseModel):
+    """Final exam results with scoring"""
+    passed: bool
+    score: int  # 0-100
+    passing_score: int
+    feedback: str
+    results: List[FinalExamAnswerResult]
+    can_retake: bool
+    certificate_earned: bool
 
 
 # ============================================

@@ -68,6 +68,40 @@ export interface ExerciseValidationResponse {
   explanation: string
 }
 
+export interface FinalExamAnswer {
+  anomaly_id: string
+  anomaly_type: string
+  severity: string
+  action: string
+}
+
+export interface FinalExamSubmissionRequest {
+  lesson_id: string
+  answers: FinalExamAnswer[]
+}
+
+export interface FinalExamAnswerResult {
+  anomaly_id: string
+  log_entry: string
+  user_type: string
+  correct_type: string
+  user_severity: string
+  correct_severity: string
+  is_correct_type: boolean
+  is_correct_severity: boolean
+  points: number
+}
+
+export interface FinalExamValidationResponse {
+  passed: boolean
+  score: number
+  passing_score: number
+  feedback: string
+  results: FinalExamAnswerResult[]
+  can_retake: boolean
+  certificate_earned: boolean
+}
+
 export interface CertificateResponse {
   certificate_url: string
   download_url: string
@@ -109,6 +143,14 @@ class CourseProgressService {
    */
   async validateExercise(projectId: string, data: ExerciseValidationRequest): Promise<ExerciseValidationResponse> {
     const response = await api.post(`${this.baseUrl}/${projectId}/course/exercises/validate`, data)
+    return response.data
+  }
+
+  /**
+   * Submit final exam with all answers
+   */
+  async submitFinalExam(projectId: string, data: FinalExamSubmissionRequest): Promise<FinalExamValidationResponse> {
+    const response = await api.post(`${this.baseUrl}/${projectId}/course/final-exam/submit`, data)
     return response.data
   }
 

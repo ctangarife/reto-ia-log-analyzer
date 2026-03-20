@@ -556,7 +556,11 @@ Cuando se generen anomalías, podrás:
                     (module_id, lesson_order, title, content, exercise_data)
                     VALUES ($1, $2, $3, $4, $5)
                 """, module_id, idx, f"Caso Práctico {idx}: {anomaly.get('type', 'Anomalía')}",
-                   content, json.dumps({"anomaly_id": anomaly.get("id")}))
+                   content, json.dumps({
+                       "type": "project_anomalies",
+                       "anomaly_id": anomaly.get("id"),
+                       "dynamic": True
+                   }))
                 lesson_count += 1
 
         return lesson_count

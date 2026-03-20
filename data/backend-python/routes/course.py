@@ -12,6 +12,7 @@ from services.course_service import course_service
 from models.learning_models import (
     CourseProgressResponse, LessonProgressUpdate,
     ExerciseValidationRequest, ExerciseValidationResponse,
+    FinalExamSubmissionRequest, FinalExamValidationResponse,
     CertificateRequest, CertificateResponse,
     WorkspaceCoursesResponse
 )
@@ -58,12 +59,17 @@ async def get_exercises(
     current_user = Depends(get_current_user)
 ):
     """Get dynamic exercises using project anomalies"""
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"get_exercises called: project_id={project_id}, lesson_id={lesson_id}, count={count}, user_id={current_user.user_id}")
     try:
         exercises = await course_service.get_project_exercises(
             current_user.user_id, project_id, lesson_id, count
         )
+        logger.info(f"get_exercises returning {len(exercises)} exercises")
         return {"exercises": exercises}
     except Exception as e:
+        logger.error(f"get_exercises error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -78,6 +84,30 @@ async def validate_exercise(
         return await course_service.validate_exercise_answer(
             current_user.user_id, project_id, data
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/final-exam/submit", response_model=FinalExamValidationResponse)
+async def submit_final_exam(
+    project_id: UUID,
+    data: FinalExamSubmissionRequest,
+    current_user = Depends(get_current_user)
+):
+    """Submit and validate final exam with scoring
+
+    Returns:
+        - passed: Whether user passed (70% required)
+        - score: Final score (0-100)
+        - results: Detailed results per question
+        - certificate_earned: Whether certificate is earned
+    """
+    try:
+        return await course_service.validate_final_exam(
+            current_user.user_id, project_id, data
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

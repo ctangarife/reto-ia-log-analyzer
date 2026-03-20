@@ -85,10 +85,17 @@ export const courseService = {
   },
 
   async getExercises(projectId: string, lessonId: string, count = 5): Promise<{ exercises: unknown[] }> {
-    const response = await api.get(`/projects/${projectId}/course/exercises`, {
-      params: { lesson_id, count }
-    })
-    return response.data
+    console.log('[courseService.getExercises] Called with:', { projectId, lessonId, count })
+    try {
+      const response = await api.get(`/projects/${projectId}/course/exercises`, {
+        params: { lesson_id: lessonId, count }
+      })
+      console.log('[courseService.getExercises] Response:', response.data)
+      return response.data
+    } catch (error) {
+      console.error('[courseService.getExercises] Error:', error)
+      throw error
+    }
   },
 
   async validateExercise(projectId: string, data: ExerciseAttempt): Promise<ExerciseValidation> {

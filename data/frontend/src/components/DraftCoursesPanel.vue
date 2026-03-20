@@ -158,23 +158,28 @@
     </Dialog>
 
     <!-- Lesson Edit Dialog -->
-    <Dialog v-model:visible="showLessonEditDialog" modal header="Editar Lección" :style="{ width: '70vw' }">
+    <Dialog
+      v-model:visible="showLessonEditDialog"
+      modal
+      header="Editar Lección"
+      :style="{ maxWidth: '1400px', width: '95vw', height: '90vh' }"
+      :contentStyle="{ height: 'calc(90vh - 100px)', overflow: 'auto' }"
+    >
       <div v-if="editingLesson" class="lesson-edit-form">
         <div class="field">
           <label for="lesson-title">Título</label>
           <InputText id="lesson-title" v-model="editingLesson.title" class="w-full" />
         </div>
 
-        <div class="field">
+        <div class="field content-field">
           <label for="lesson-content">Contenido (Markdown)</label>
           <Textarea
             id="lesson-content"
             v-model="editingLesson.content"
-            rows="15"
-            class="w-full"
+            class="w-full markdown-textarea"
             autoResize
           />
-          <small class="text-color-secondary">
+          <small class="text-color-secondary mt-2">
             Puedes usar Markdown para dar formato. Soporta: **negrita**, *cursiva*, # encabezados, - listas, etc.
           </small>
         </div>
@@ -528,6 +533,11 @@ onMounted(() => {
     loadCourses()
   }
 })
+
+// Expose loadCourses for parent component to call
+defineExpose({
+  loadCourses
+})
 </script>
 
 <style scoped>
@@ -692,6 +702,22 @@ onMounted(() => {
 
 .lesson-edit-form .field {
   margin-bottom: 1rem;
+}
+
+.content-field {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 300px;
+}
+
+.markdown-textarea :deep(.p-inputtextarea) {
+  min-height: 350px !important;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
+  font-size: 0.95rem;
+  line-height: 1.6;
+  padding: 1rem !important;
+  resize: vertical !important;
 }
 
 .lesson-edit-form label {

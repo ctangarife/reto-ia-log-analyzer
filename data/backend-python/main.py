@@ -298,6 +298,7 @@ async def init_learning_schema():
             """)
 
             # Crear índices
+            await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS lesson_progress_user_lesson_uk ON learning.lesson_progress(user_id, lesson_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_lesson_progress_user ON learning.lesson_progress(user_id, project_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_lesson_progress_lesson ON learning.lesson_progress(lesson_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_exercise_attempts_user ON learning.exercise_attempts(user_id, project_id)")

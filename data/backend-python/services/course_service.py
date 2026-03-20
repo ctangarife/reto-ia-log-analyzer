@@ -13,7 +13,9 @@ from models.learning_models import (
     CourseModule, CourseLesson, LessonProgress, CourseCompletion,
     ExerciseAttempt,
     CourseProgressResponse, CourseModuleResponse, CourseLessonResponse,
-    LessonProgressUpdate, ExerciseValidationRequest, ExerciseValidationResponse
+    LessonProgressUpdate, ExerciseValidationRequest, ExerciseValidationResponse,
+    FinalExamSubmissionRequest, FinalExamValidationResponse,
+    FinalExamAnswerResult
 )
 
 logger = logging.getLogger(__name__)
@@ -210,7 +212,8 @@ class CourseService:
             raise
 
     async def get_project_exercises(self, user_id: UUID, project_id: UUID, lesson_id: UUID, count: int = 5) -> list:
-        """Get dynamic exercises using project anomalies"""
+        """Get dynamic exercises using project anomalies from MongoDB"""
+        logger.info(f"get_project_exercises: user_id={user_id}, project_id={project_id}, lesson_id={lesson_id}, count={count}")
         try:
             # Get exercise configuration for this lesson
             async with db_manager.postgres_pool.acquire() as conn:
@@ -219,63 +222,105 @@ class CourseService:
                     lesson_id
                 )
 
+                logger.info(f"Lesson query result: lesson_found={lesson is not None}, exercise_data={lesson['exercise_data'] if lesson else 'N/A'}")
+
                 if not lesson or not lesson["exercise_data"]:
+                    logger.warning("No lesson or exercise_data found, returning []")
                     return []
 
-                exercise_type = lesson["exercise_data"]["type"]
+                # Parse exercise_data if it's a string (JSONB from PostgreSQL)
+                exercise_data = lesson["exercise_data"]
+                if isinstance(exercise_data, str):
+                    exercise_data = json.loads(exercise_data)
 
-                if exercise_type == "project_anomalies":
-                    # Get recent anomalies from this project
-                    anomalies = await conn.fetch("""
-                        SELECT
-                            r.id as anomaly_id,
-                            r.log_entry,
-                            r.score,
-                            r.explanation
-                        FROM (
-                            SELECT DISTINCT ON (r.anomaly_id) r.id
-                            FROM processing.processing_jobs j
-                            JOIN logsanomaly.chunks c ON c.file_id = j.id
-                            JOIN logsanomaly.results r ON r.chunk_id = str(c._id)
-                            WHERE j.status = 'completed'
-                            AND (j.project_id = $1 OR j.project_id IS NULL)
-                            ORDER BY j.completed_at DESC
-                            LIMIT 100
-                        ) recent
-                        CROSS JOIN LATERAL jsonb_array_elements(r.anomalies) as anomaly_data
-                        CROSS JOIN LATERAL logsanomaly.chunks c2 ON c2._id::text = anomaly_data->>'chunk_id'
-                        WHERE anomaly_data->>'is_anomaly' = 'true'
-                        ORDER BY RANDOM()
-                        LIMIT $2
-                    """, project_id, count)
+                exercise_type = exercise_data.get("type")
+                logger.info(f"Exercise type: {exercise_type}")
 
-                    return [dict(row) for row in anomalies]
+            # Get job IDs from PostgreSQL first
+            async with db_manager.postgres_pool.acquire() as conn:
+                job_ids = await conn.fetch(
+                    """SELECT id FROM processing.processing_jobs
+                       WHERE status = 'completed'
+                       AND (project_id = $1 OR project_id IS NULL)
+                       ORDER BY completed_at DESC
+                       LIMIT 100""",
+                    project_id
+                )
 
-                elif exercise_type == "final_exam":
-                    # Get diverse anomalies for final exam
-                    anomalies = await conn.fetch("""
-                        SELECT DISTINCT
-                            anomaly_data->>'log_entry' as log_entry,
-                            anomaly_data->>'score' as score,
-                            anomaly_data->>'explanation' as explanation,
-                            anomaly_data->>'is_anomaly' as is_anomaly
-                        FROM processing.processing_jobs j
-                        JOIN logsanomaly.chunks c ON c.file_id = j.id
-                        JOIN logsanomaly.results r ON r.chunk_id = str(c._id)
-                        CROSS JOIN LATERAL jsonb_array_elements(r.anomalies) as anomaly_data
-                        WHERE j.status = 'completed'
-                        AND (j.project_id = $1 OR j.project_id IS NULL)
-                        ORDER BY RANDOM()
-                        LIMIT $2
-                    """, project_id, count)
+                if not job_ids:
+                    return []
 
-                    return [dict(row) for row in anomalies]
+                file_ids = [str(job["id"]) for job in job_ids]
 
-                return []
+            # Now query MongoDB directly using AsyncIOMotorClient
+            exercises = []
+
+            if exercise_type == "project_anomalies":
+                # Get chunks from MongoDB for these file_ids
+                chunks = await db_manager.mongodb_db["chunks"].find({
+                    "file_id": {"$in": file_ids}
+                }).to_list(length=100)
+
+                chunk_ids = [str(c.get("_id", "")) for c in chunks]
+
+                # Get results from MongoDB
+                cursor = db_manager.mongodb_db["results"].find({
+                    "chunk_id": {"$in": chunk_ids}
+                })
+
+                async for result in cursor:
+                    anomalies_list = result.get("anomalies", [])
+                    for anomaly in anomalies_list:
+                        if anomaly.get("is_anomaly") == True:
+                            exercises.append({
+                                "anomaly_id": str(result.get("_id", "")) + "-" + str(anomaly.get("chunk_id", "")),
+                                "log_entry": anomaly.get("log_entry", ""),
+                                "score": anomaly.get("score", 0),
+                                "explanation": anomaly.get("explanation", "")
+                            })
+                            if len(exercises) >= count:
+                                break
+                    if len(exercises) >= count:
+                        break
+
+            elif exercise_type == "final_exam":
+                # Get diverse anomalies for final exam from MongoDB
+                cursor = db_manager.mongodb_db["results"].find({
+                    "chunk_id": {"$in": await self._get_chunk_ids_for_project(file_ids)}
+                })
+
+                async for result in cursor:
+                    anomalies_list = result.get("anomalies", [])
+                    for anomaly in anomalies_list:
+                        if anomaly.get("is_anomaly") == True:
+                            exercises.append({
+                                "anomaly_id": str(result.get("_id", "")) + "-" + str(anomaly.get("chunk_id", "")),
+                                "log_entry": anomaly.get("log_entry", ""),
+                                "score": anomaly.get("score", 0),
+                                "explanation": anomaly.get("explanation", "")
+                            })
+                            if len(exercises) >= count:
+                                break
+                    if len(exercises) >= count:
+                        break
+
+            # Randomize and limit
+            import random
+            random.shuffle(exercises)
+            return exercises[:count]
 
         except Exception as e:
             logger.error(f"Error getting project exercises: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
+
+    async def _get_chunk_ids_for_project(self, file_ids: list) -> list:
+        """Helper to get chunk_ids for given file_ids"""
+        chunks = await db_manager.mongodb_db["chunks"].find({
+            "file_id": {"$in": file_ids}
+        }).to_list(length=500)
+        return [str(c.get("_id", "")) for c in chunks]
 
     async def validate_exercise_answer(self, user_id: UUID, project_id: UUID, data: ExerciseValidationRequest) -> ExerciseValidationResponse:
         """Validate a user's exercise answer"""
@@ -294,11 +339,16 @@ class CourseService:
                         explanation=None
                     )
 
-                exercise_type = lesson["exercise_data"]["type"]
+                # Parse exercise_data if it's a string (JSONB from PostgreSQL)
+                exercise_data = lesson["exercise_data"]
+                if isinstance(exercise_data, str):
+                    exercise_data = json.loads(exercise_data)
+
+                exercise_type = exercise_data.get("type")
 
                 if exercise_type == "quiz" or exercise_type == "analysis":
                     # Validate static quiz questions
-                    return await self._validate_static_exercise(conn, user_id, project_id, data, lesson["exercise_data"])
+                    return await self._validate_static_exercise(conn, user_id, project_id, data, exercise_data)
 
                 elif exercise_type == "project_anomalies" or exercise_type == "final_exam":
                     # For project-based exercises, we'll return the correct answer for learning
@@ -356,16 +406,18 @@ class CourseService:
 
     async def _check_course_completion(self, conn, user_id: UUID, project_id: UUID) -> None:
         """Check if course is complete and create completion record"""
-        # Count total and completed lessons
+        # Count total and completed lessons using the new course structure
         stats = await conn.fetchrow("""
             SELECT
                 (SELECT COUNT(*) FROM learning.course_lessons l
                  JOIN learning.course_modules m ON m.id = l.module_id
-                 WHERE m.project_id = $1) as total_lessons,
+                 JOIN learning.courses c ON c.id = m.course_id
+                 WHERE c.project_id = $1 AND c.status = 'published') as total_lessons,
                 (SELECT COUNT(*) FROM learning.lesson_progress lp
                  JOIN learning.course_lessons l ON l.id = lp.lesson_id
                  JOIN learning.course_modules m ON m.id = l.module_id
-                 WHERE m.project_id = $1 AND lp.user_id = $2) as completed_lessons
+                 JOIN learning.courses c ON c.id = m.course_id
+                 WHERE c.project_id = $1 AND c.status = 'published' AND lp.user_id = $2) as completed_lessons
         """, project_id, user_id)
 
         if not stats:
@@ -462,6 +514,213 @@ class CourseService:
         except Exception as e:
             logger.error(f"Error generating dynamic content: {e}")
             return f"# {lesson_title}\n\nNo se pudo cargar el contenido dinámico."
+
+    async def validate_final_exam(
+        self,
+        user_id: UUID,
+        project_id: UUID,
+        data: FinalExamSubmissionRequest
+    ) -> FinalExamValidationResponse:
+        """Validate final exam submission with scoring
+
+        Each anomaly answer is scored as follows:
+        - Correct type: 10 points
+        - Correct severity: 10 points
+        - Total per anomaly: 20 points
+        - 5 anomalies = 100 points maximum
+
+        Passing score: 70%
+        """
+        try:
+            async with db_manager.postgres_pool.acquire() as conn:
+                # Get lesson and exercise_data
+                lesson = await conn.fetchrow("""
+                    SELECT l.id, l.title, l.exercise_data, l.module_id,
+                           m.course_id, m.project_id
+                    FROM learning.course_lessons l
+                    JOIN learning.course_modules m ON m.id = l.module_id
+                    WHERE l.id = $1
+                """, data.lesson_id)
+
+                if not lesson:
+                    raise ValueError("Lección no encontrada")
+
+                # Parse exercise_data if it's a string (JSONB from PostgreSQL)
+                exercise_data = lesson["exercise_data"]
+                if isinstance(exercise_data, str):
+                    exercise_data = json.loads(exercise_data)
+
+                if not exercise_data or exercise_data.get("type") != "final_exam":
+                    raise ValueError("Esta lección no es un examen final")
+
+                passing_score = exercise_data.get("passing_score", 70)
+
+                # Get the anomalies for this exam from exercise_data
+                exam_anomaly_ids = [a["id"] for a in exercise_data.get("anomalies", [])]
+
+                # Build a map of user answers by anomaly_id
+                user_answers_map = {ans.anomaly_id: ans for ans in data.answers}
+
+                # Get actual anomalies from MongoDB to validate against
+                from config.database import db_manager as db_mgr
+
+                results = []
+                total_points = 0
+                max_points = len(exam_anomaly_ids) * 20  # 20 points per anomaly
+
+                for idx, anomaly_id in enumerate(exam_anomaly_ids):
+                    # The frontend sends anomaly_id in format "result_id-chunk_id"
+                    # We need to find the user answer by matching the chunk_id part (second part after "-")
+                    user_answer = None
+                    for user_anomaly_id, user_ans in user_answers_map.items():
+                        # Extract chunk_id from the compound ID (second part after "-")
+                        user_chunk_id = user_anomaly_id.split("-")[1] if "-" in user_anomaly_id else user_anomaly_id
+                        if user_chunk_id == anomaly_id or user_anomaly_id == anomaly_id:
+                            user_answer = user_ans
+                            break
+
+                    # Get anomaly data from MongoDB
+                    mongo_db = db_mgr.mongodb_db
+                    anomaly_data = await mongo_db.results.find_one(
+                        {"chunk_id": anomaly_id},
+                        {"anomalies": 1}
+                    )
+
+                    # Extract first anomaly from chunk
+                    if anomaly_data and anomaly_data.get("anomalies"):
+                        anomaly_info = anomaly_data["anomalies"][0]
+                        log_entry = anomaly_info.get("log_entry", "N/A")
+                        score = anomaly_info.get("score", 0)
+                        explanation = anomaly_info.get("explanation", "")
+
+                        # Infer correct type and severity from log entry and score
+                        correct_type = self._infer_anomaly_type_from_log(log_entry)
+                        correct_severity = self._infer_severity_from_score(score)
+
+                        # Score user's answer
+                        points = 0
+                        is_correct_type = False
+                        is_correct_severity = False
+
+                        if user_answer:
+                            # Check type (10 points)
+                            if user_answer.anomaly_type.lower() == correct_type.lower():
+                                points += 10
+                                is_correct_type = True
+
+                            # Check severity (10 points)
+                            if user_answer.severity.lower() == correct_severity.lower():
+                                points += 10
+                                is_correct_severity = True
+
+                        total_points += points
+
+                        results.append(FinalExamAnswerResult(
+                            anomaly_id=anomaly_id,
+                            log_entry=log_entry[:200] + "..." if len(log_entry) > 200 else log_entry,
+                            user_type=user_answer.anomaly_type if user_answer else "Sin respuesta",
+                            correct_type=correct_type,
+                            user_severity=user_answer.severity if user_answer else "Sin respuesta",
+                            correct_severity=correct_severity,
+                            is_correct_type=is_correct_type,
+                            is_correct_severity=is_correct_severity,
+                            points=points
+                        ))
+
+                # Calculate final score (0-100)
+                final_score = int((total_points / max_points) * 100) if max_points > 0 else 0
+                passed = final_score >= passing_score
+
+                # Generate feedback
+                if passed:
+                    feedback = f"¡Felicitaciones! Has aprobado el examen final con un score de {final_score}%. "
+                    feedback += "Has demostrado un buen entendimiento de la detección de anomalías."
+                else:
+                    feedback = f"Tu score es {final_score}%, necesitas al menos {passing_score}% para aprobar. "
+                    feedback += "Revisa los módulos anteriores y vuelve a intentarlo."
+
+                # Check if user can retake (no previous passing attempts)
+                previous_passing = await conn.fetchval("""
+                    SELECT COUNT(*) FROM learning.exercise_attempts
+                    WHERE user_id = $1 AND project_id = $2 AND lesson_id = $3 AND is_correct = TRUE
+                """, user_id, project_id, data.lesson_id)
+
+                can_retake = previous_passing == 0
+
+                # Record attempt
+                await conn.execute("""
+                    INSERT INTO learning.exercise_attempts (user_id, project_id, lesson_id, user_answer, is_correct)
+                    VALUES ($1, $2, $3, $4, $5)
+                """, user_id, project_id, data.lesson_id,
+                    json.dumps({"answers": [a.model_dump() for a in data.answers], "score": final_score}),
+                    passed)
+
+                # If passed, mark lesson as complete
+                if passed:
+                    await conn.execute("""
+                        INSERT INTO learning.lesson_progress (user_id, lesson_id, project_id, completed_at)
+                        VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (user_id, lesson_id) DO UPDATE
+                        SET completed_at = $4, score = $5
+                    """, user_id, data.lesson_id, project_id, datetime.utcnow(), final_score)
+
+                    # Check if course is complete
+                    await self._check_course_completion(conn, user_id, project_id)
+
+                return FinalExamValidationResponse(
+                    passed=passed,
+                    score=final_score,
+                    passing_score=passing_score,
+                    feedback=feedback,
+                    results=results,
+                    can_retake=can_retake,
+                    certificate_earned=passed
+                )
+
+        except Exception as e:
+            logger.error(f"Error validating final exam: {e}")
+            raise
+
+    def _infer_anomaly_type_from_log(self, log_entry: str) -> str:
+        """Infer anomaly type from log entry content"""
+        log_lower = log_entry.lower()
+
+        # Security keywords
+        security_keywords = ["login", "auth", "attack", "malware", "injection", "xss", "csrf", "unauthorized", "forbidden"]
+        if any(kw in log_lower for kw in security_keywords):
+            return "Seguridad"
+
+        # Performance keywords
+        perf_keywords = ["slow", "latency", "timeout", "response time", "delay", "performance"]
+        if any(kw in log_lower for kw in perf_keywords):
+            return "Performance"
+
+        # Network keywords
+        net_keywords = ["network", "connection", "tcp", "udp", "packet", "dns", "socket"]
+        if any(kw in log_lower for kw in net_keywords):
+            return "Red"
+
+        # Behavior keywords
+        beh_keywords = ["error", "exception", "crash", "failure", "bug"]
+        if any(kw in log_lower for kw in beh_keywords):
+            return "Comportamiento"
+
+        return "General"
+
+    def _infer_severity_from_score(self, score: float) -> str:
+        """Infer severity from anomaly score
+
+        Isolation Forest scores: negative values indicate anomalies
+        More negative = more anomalous = higher severity
+        """
+        if score <= -0.6:
+            return "Critical"
+        elif score <= -0.3:
+            return "High"
+        elif score <= -0.1:
+            return "Medium"
+        else:
+            return "Low"
 
 
 # Singleton instance

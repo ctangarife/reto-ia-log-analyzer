@@ -23,6 +23,8 @@ from models.learning_models import (
 )
 from services.course_rbac_service import course_rbac_service
 from config.database import db_manager
+import logging
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/course-generation", tags=["course-generation"])
 
@@ -300,6 +302,14 @@ async def submit_for_review(
             if not course:
                 raise HTTPException(status_code=404, detail="Course not found")
 
+            # Check if already pending
+            if course["status"] == "pending":
+                return CourseUpdateResponse(
+                    course_id=course_id,
+                    status="pending",
+                    message="El curso ya está en revisión"
+                )
+
             # Check permission (creator or editor can submit)
             workspace_id = course["workspace_id"]
             if course["created_by"] != current_user.user_id:
@@ -309,15 +319,16 @@ async def submit_for_review(
                 if not has_perm and not current_user.is_super_admin:
                     raise HTTPException(status_code=403, detail="No permission to submit this course")
 
-            # Check limits for pending courses
-            limits = await course_generation_service.check_course_limits(
-                course["project_id"], "pending"
-            )
-            if not limits.can_create:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"No se puede enviar para revisión: {limits.reason}"
+            # Check limits for pending courses (only for project-scoped courses)
+            if course["project_id"]:
+                limits = await course_generation_service.check_course_limits(
+                    course["project_id"], "pending"
                 )
+                if not limits.can_create:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"No se puede enviar para revisión: {limits.reason}"
+                    )
 
             # Update status to pending
             await conn.execute(
@@ -333,12 +344,12 @@ async def submit_for_review(
                    (workspace_id, user_id, course_id, type)
                    SELECT $1, u.id, $2, 'pending_review'
                    FROM auth.users u
-                   JOIN auth.user_roles ur ON ur.user_id = u.id
-                   JOIN auth.roles r ON r.id = ur.role_id
-                   JOIN auth.role_permissions rp ON rp.role_id = r.id
+                   JOIN auth.user_workspace_roles uwr ON uwr.user_id = u.id AND uwr.workspace_id = $1
+                   JOIN auth.role_permissions rp ON rp.role_id = uwr.role_id
                    JOIN auth.permissions p ON p.id = rp.permission_id
-                   WHERE p.permission_name = 'courses:review'
-                   AND u.workspace_id = $1""",
+                   JOIN auth.modules m ON m.id = p.module_id
+                   WHERE m.name = 'courses'
+                   AND p.action = 'review'""",
                 course["workspace_id"], course_id
             )
 
@@ -351,6 +362,8 @@ async def submit_for_review(
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        logger.error(f"Error in submit_for_review: {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -553,13 +566,12 @@ async def approve_course(
                 )
                 archived_course_id = str(existing_published["id"])
 
-            # Update status to published directly
+            # Update status to approved (not published yet)
             await conn.execute(
                 """UPDATE learning.courses
-                   SET status = 'published',
+                   SET status = 'approved',
                        reviewed_by = $1,
-                       reviewed_at = CURRENT_TIMESTAMP,
-                       published_at = CURRENT_TIMESTAMP
+                       reviewed_at = CURRENT_TIMESTAMP
                    WHERE id = $2""",
                 current_user.user_id, course_id
             )
@@ -572,13 +584,13 @@ async def approve_course(
                 course_id, current_user.user_id, data.comments, course["version_number"]
             )
 
-        message = "Curso aprobado y publicado."
+        message = "Curso aprobado. Listo para publicar."
         if archived_course_id:
             message += f" Curso anterior archivado."
 
         return ReviewActionResponse(
             course_id=course_id,
-            status="published",
+            status="approved",
             message=message,
             archived_course_id=archived_course_id
         )

@@ -324,6 +324,11 @@ onMounted(() => {
     loadCourses()
   }
 })
+
+// Expose loadCourses for parent component to call
+defineExpose({
+  loadCourses
+})
 </script>
 
 <style scoped>

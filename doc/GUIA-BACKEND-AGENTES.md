@@ -466,7 +466,7 @@ python -m debug.run_all_tests
 ```bash
 curl -X POST http://localhost/api/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username":"ctangarife","password":"1nt3r4ct1v3"}'
+  -d '{"username":"ctangarife","password":"TU_CONTRASENA"}'
 ```
 
 **Obtener usuario actual**:

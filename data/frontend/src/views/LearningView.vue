@@ -192,8 +192,10 @@
                         <!-- Examen final -->
                         <div v-if="lesson.exercise_data?.type === 'final_exam'" class="final-exam">
                           <p class="exam-intro">
-                            Responde correctamente al menos {{ lesson.exercise_data.passing_score }}% de las preguntas
-                            para completar el curso.
+                            <strong>Examen Final</strong><br>
+                            Analiza cada anomalía e identifica su <strong>tipo</strong> y <strong>severidad</strong>.
+                            Necesitas al menos {{ lesson.exercise_data.passing_score || 70 }}% para aprobar.
+                            Cada respuesta vale 20 puntos (10 por tipo, 10 por severidad).
                           </p>
                           <div v-if="finalExamAnomalies.length > 0" class="exam-questions">
                             <div
@@ -201,32 +203,87 @@
                               :key="idx"
                               class="exam-question"
                             >
-                              <h5>Pregunta {{ idx + 1 }}</h5>
+                              <div class="exam-question-header">
+                                <h5>Pregunta {{ idx + 1 }}</h5>
+                                <Tag v-if="finalExamResults?.results[idx]" :value="`${finalExamResults.results[idx].points}/20 pts`" :severity="finalExamResults.results[idx].points >= 15 ? 'success' : finalExamResults.results[idx].points >= 10 ? 'warn' : 'danger'" />
+                              </div>
                               <pre class="exam-log">{{ anomaly.log_entry }}</pre>
-                              <p class="exam-question-text">
-                                ¿Qué tipo de anomalía representa este log?
-                              </p>
-                              <div class="exam-options">
-                                <button
-                                  v-for="option in getExamOptions()"
-                                  :key="option.value"
-                                  class="exam-option"
-                                  :class="{ selected: finalExamAnswers[idx] === option.value, correct: finalExamResults?.correct_answers?.[idx] === option.value }"
-                                  @click="selectFinalAnswer(idx, option.value)"
-                                >
-                                  {{ option.label }}
-                                </button>
+
+                              <!-- Formulario de respuestas -->
+                              <div v-if="!finalExamResults" class="exam-answer-form">
+                                <div class="form-group">
+                                  <label>Tipo de Anomalía:</label>
+                                  <div class="exam-options">
+                                    <button
+                                      v-for="option in getExamTypeOptions()"
+                                      :key="option.value"
+                                      class="exam-option"
+                                      :class="{ selected: finalExamAnswers[idx]?.anomaly_type === option.value }"
+                                      @click="updateFinalAnswer(idx, 'anomaly_type', option.value)"
+                                    >
+                                      {{ option.label }}
+                                    </button>
+                                  </div>
+                                </div>
+                                <div class="form-group">
+                                  <label>Severidad:</label>
+                                  <div class="exam-options">
+                                    <button
+                                      v-for="option in getExamSeverityOptions()"
+                                      :key="option.value"
+                                      class="exam-option severity-option"
+                                      :class="{ selected: finalExamAnswers[idx]?.severity === option.value }"
+                                      @click="updateFinalAnswer(idx, 'severity', option.value)"
+                                    >
+                                      {{ option.label }}
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <!-- Resultados por pregunta -->
+                              <div v-if="finalExamResults?.results[idx]" class="exam-question-result">
+                                <div class="result-details">
+                                  <div class="result-item" :class="{ correct: finalExamResults.results[idx].is_correct_type }">
+                                    <i :class="finalExamResults.results[idx].is_correct_type ? 'pi-check-circle' : 'pi-times-circle'"></i>
+                                    <span>Tipo: <strong>{{ finalExamResults.results[idx].user_type }}</strong> {{ finalExamResults.results[idx].is_correct_type ? '✓' : `✗ (Correcto: ${finalExamResults.results[idx].correct_type})` }}</span>
+                                  </div>
+                                  <div class="result-item" :class="{ correct: finalExamResults.results[idx].is_correct_severity }">
+                                    <i :class="finalExamResults.results[idx].is_correct_severity ? 'pi-check-circle' : 'pi-times-circle'"></i>
+                                    <span>Severidad: <strong>{{ finalExamResults.results[idx].user_severity }}</strong> {{ finalExamResults.results[idx].is_correct_severity ? '✓' : `✗ (Correcto: ${finalExamResults.results[idx].correct_severity})` }}</span>
+                                  </div>
+                                </div>
                               </div>
                             </div>
                           </div>
-                          <button class="btn-submit" @click="submitFinalExam(lesson)" :disabled="!allFinalAnswers">
-                            Enviar Examen
-                          </button>
+
+                          <!-- Botón enviar / reiniciar -->
+                          <div v-if="!finalExamResults" class="exam-actions">
+                            <button class="btn-submit" @click="submitFinalExam(lesson)" :disabled="!allFinalAnswers || finalExamSubmitting">
+                              {{ finalExamSubmitting ? 'Enviando...' : 'Enviar Examen' }}
+                            </button>
+                          </div>
+                          <div v-else class="exam-actions">
+                            <button v-if="finalExamResults.can_retake && !finalExamResults.passed" class="btn-retry" @click="resetFinalExam">
+                              Intentar de Nuevo
+                            </button>
+                          </div>
+
+                          <!-- Resultados generales -->
                           <div v-if="finalExamResults" class="exam-results">
                             <div :class="['result-banner', finalExamResults.passed ? 'success' : 'error']">
-                              <span>{{ finalExamResults.message }}</span>
+                              <i :class="finalExamResults.passed ? 'pi-check-circle' : 'pi-times-circle'"></i>
+                              <div>
+                                <strong>{{ finalExamResults.passed ? '¡Aprobado!' : 'No Aprobado' }}</strong>
+                                <p>{{ finalExamResults.feedback }}</p>
+                              </div>
                             </div>
-                            <p>Score: {{ finalExamResults.score }}%</p>
+                            <div class="score-display">
+                              <div class="score-circle" :class="{ passed: finalExamResults.passed }">
+                                <span class="score-number">{{ finalExamResults.score }}%</span>
+                                <span class="score-label">de {{ finalExamResults.passing_score }}% requerido</span>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -248,6 +305,7 @@
         <!-- Draft Courses Tab (for creators) -->
         <TabPanel header="📝 Borradores" v-if="canManageCourses">
           <DraftCoursesPanel
+            ref="draftPanelRef"
             :workspaceId="authStore.selectedWorkspaceId"
             @course-selected="onCourseSelected"
             @course-actioned="onCourseActioned"
@@ -258,6 +316,7 @@
         <!-- Pending Courses Tab (for reviewers) -->
         <TabPanel header="⏳ Pendientes" v-if="canReviewCourses">
           <PendingCoursesPanel
+            ref="pendingPanelRef"
             :workspaceId="authStore.selectedWorkspaceId"
             @course-selected="onCourseSelected"
             @course-actioned="onCourseActioned"
@@ -267,6 +326,7 @@
         <!-- Approved Courses Tab (ready to publish) -->
         <TabPanel header="✅ Aprobados" v-if="canManageCourses">
           <ApprovedCoursesPanel
+            ref="approvedPanelRef"
             :workspaceId="authStore.selectedWorkspaceId"
             @course-selected="onCourseSelected"
             @course-actioned="onCourseActioned"
@@ -283,6 +343,7 @@ import { useAuthStore } from '../stores/authStore'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useCourseStore } from '../stores/courseStore'
 import { courseService } from '../services/courseService'
+import { courseProgressService } from '../services/courseProgressService'
 import CourseManagementWidget from '../components/CourseManagementWidget.vue'
 import DraftCoursesPanel from '../components/DraftCoursesPanel.vue'
 import PendingCoursesPanel from '../components/PendingCoursesPanel.vue'
@@ -293,6 +354,7 @@ import TabView from 'primevue/tabview'
 import TabPanel from 'primevue/tabpanel'
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import type { FinalExamAnswer, FinalExamValidationResponse } from '../services/courseProgressService'
 
 const authStore = useAuthStore()
 const analysisStore = useAnalysisStore()
@@ -306,10 +368,16 @@ const answers = ref<Record<string, number>>({})
 const exerciseResults = ref<any>(null)
 const projectExercises = ref<any[]>([])
 const finalExamAnomalies = ref<any[]>([])
-const finalExamAnswers = ref<(number | null)[]>([])
-const finalExamResults = ref<any>(null)
+const finalExamAnswers = ref<Record<number, FinalExamAnswer>>({})
+const finalExamResults = ref<FinalExamValidationResponse | null>(null)
+const finalExamSubmitting = ref(false)
 const workspaceUsers = ref<Array<any>>([])
 const activeTab = ref(0) // Default to Published tab
+
+// Panel references for tab change reloading
+const draftPanelRef = ref<any>(null)
+const pendingPanelRef = ref<any>(null)
+const approvedPanelRef = ref<any>(null)
 
 const circumference = 2 * Math.PI * 16
 
@@ -319,7 +387,10 @@ const strokeDashoffset = computed(() => {
 })
 
 const hasAnswers = computed(() => Object.keys(answers.value).length > 0)
-const allFinalAnswers = computed(() => finalExamAnswers.value.every(a => a !== null))
+const allFinalAnswers = computed(() => {
+  return finalExamAnomalies.value.length > 0 &&
+    finalExamAnomalies.value.every((_, idx) => finalExamAnswers.value[idx]?.anomaly_type && finalExamAnswers.value[idx]?.severity)
+})
 
 const canManageCourses = computed(() => {
   return courseStore.canGenerateCourse || courseStore.canReviewCourses
@@ -362,29 +433,79 @@ function selectLesson(lesson: any) {
   selectedLesson.value = lesson
   exerciseResults.value = null
   answers.value = {}
-  finalExamAnswers.value = []
+  finalExamAnswers.value = {}
+  finalExamResults.value = null
+
+  console.log('selectLesson:', lesson.title, 'exercise_data:', lesson.exercise_data)
 
   if (lesson.exercise_data?.dynamic && lesson.exercise_data.type === 'project_anomalies') {
+    console.log('Loading project exercises for lesson:', lesson.id)
     loadProjectExercises(lesson.id)
   } else if (lesson.exercise_data?.type === 'final_exam') {
+    console.log('Loading final exam for lesson:', lesson.id)
     loadFinalExam(lesson.id)
   }
 }
 
 async function loadProjectExercises(lessonId: string) {
   try {
-    const data = await courseService.getExercises(authStore.selectedProjectId!, lessonId, 5)
+    console.log('loadProjectExercises called with lessonId:', lessonId, 'projectId:', authStore.selectedProjectId)
+
+    if (!authStore.selectedProjectId) {
+      console.error('ERROR: authStore.selectedProjectId is undefined or null!')
+      console.error('authStore:', authStore)
+      return
+    }
+
+    console.log('Calling courseService.getExercises with:', authStore.selectedProjectId, lessonId, 5)
+    const data = await courseService.getExercises(authStore.selectedProjectId, lessonId, 5)
+    console.log('loadProjectExercises response:', data)
     projectExercises.value = data.exercises || []
+    console.log('projectExercises.value:', projectExercises.value)
   } catch (error) {
     console.error('Error loading project exercises:', error)
+    console.error('Error details:', error)
   }
 }
 
 async function loadFinalExam(lessonId: string) {
   try {
-    const data = await courseService.getExercises(authStore.selectedProjectId!, lessonId, 5)
-    finalExamAnomalies.value = data.exercises || []
-    finalExamAnswers.value = new Array(data.exercises?.length || 0).fill(null)
+    console.log('loadFinalExam called with lessonId:', lessonId, 'projectId:', authStore.selectedProjectId)
+
+    if (!authStore.selectedProjectId) {
+      console.error('ERROR: authStore.selectedProjectId is undefined or null!')
+      console.error('authStore:', authStore)
+      return
+    }
+
+    console.log('Calling courseService.getExercises with:', authStore.selectedProjectId, lessonId, 5)
+    const data = await courseService.getExercises(authStore.selectedProjectId, lessonId, 5)
+    console.log('loadFinalExam response:', data)
+
+    // For final exam, use the anomaly_ids from the lesson's exercise_data directly
+    // The exercise_data.anomalies contains the correct chunk_ids
+    const lessonExerciseAnomalies = selectedLesson.value?.exercise_data?.anomalies || []
+    const exercises = data.exercises || []
+
+    finalExamAnomalies.value = exercises.map((ex: any, idx: number) => ({
+      ...ex,
+      // Override anomaly_id with the correct chunk_id from exercise_data
+      anomaly_id: lessonExerciseAnomalies[idx]?.id || ex.anomaly_id
+    }))
+
+    console.log('finalExamAnomalies.value:', finalExamAnomalies.value)
+
+    // Initialize empty answers for each anomaly
+    finalExamAnomalies.value.forEach((anomaly: any, idx: number) => {
+      if (!finalExamAnswers.value[idx]) {
+        finalExamAnswers.value[idx] = {
+          anomaly_id: anomaly.anomaly_id || '',
+          anomaly_type: '',
+          severity: '',
+          action: ''
+        }
+      }
+    })
   } catch (error) {
     console.error('Error loading final exam:', error)
   }
@@ -398,54 +519,74 @@ function toggleModule(moduleId: string) {
   }
 }
 
-function getExamOptions() {
+function getExamTypeOptions() {
   return [
-    { value: 'security', label: '🔴 Anomalía de Seguridad' },
-    { value: 'operational', label: '🟡 Anomalía Operativa' },
-    { value: 'behavioral', label: '🟠 Anomalía de Comportamiento' },
-    { value: 'normal', label: '🟢 Comportamiento Normal' }
+    { value: 'Seguridad', label: '🔴 Seguridad' },
+    { value: 'Performance', label: '🟡 Performance' },
+    { value: 'Red', label: '🟠 Red' },
+    { value: 'Comportamiento', label: '🟠 Comportamiento' },
+    { value: 'General', label: '⚪ General' }
   ]
 }
 
-function selectFinalAnswer(questionIndex: number, value: number) {
-  finalExamAnswers.value[questionIndex] = value
+function getExamSeverityOptions() {
+  return [
+    { value: 'Critical', label: '🔴 Crítica' },
+    { value: 'High', label: '🟠 Alta' },
+    { value: 'Medium', label: '🟡 Media' },
+    { value: 'Low', label: '🟢 Baja' }
+  ]
+}
+
+function updateFinalAnswer(questionIndex: number, field: 'anomaly_type' | 'severity' | 'action', value: string) {
+  if (!finalExamAnswers.value[questionIndex]) {
+    finalExamAnswers.value[questionIndex] = {
+      anomaly_id: finalExamAnomalies.value[questionIndex]?.anomaly_id || '',
+      anomaly_type: '',
+      severity: '',
+      action: ''
+    }
+  }
+  finalExamAnswers.value[questionIndex][field] = value
 }
 
 async function submitFinalExam(lesson: any) {
-  const correctAnswers: Record<number, number> = {}
-  let correctCount = 0
+  if (!authStore.selectedProjectId) return
 
-  finalExamAnomalies.value.forEach((anomaly, idx) => {
-    const score = parseFloat(anomaly.score || 0)
-    if (score < -0.3) {
-      correctAnswers[idx] = 0
-    } else if (score < 0) {
-      correctAnswers[idx] = 2
-    } else {
-      correctAnswers[idx] = 3
+  finalExamSubmitting.value = true
+  try {
+    // Prepare answers array
+    const answersArray = finalExamAnomalies.value.map((anomaly, idx) => ({
+      anomaly_id: anomaly.anomaly_id,
+      anomaly_type: finalExamAnswers.value[idx]?.anomaly_type || '',
+      severity: finalExamAnswers.value[idx]?.severity || '',
+      action: finalExamAnswers.value[idx]?.action || 'Analizar y documentar'
+    }))
+
+    const result = await courseProgressService.submitFinalExam(
+      authStore.selectedProjectId,
+      {
+        lesson_id: lesson.id,
+        answers: answersArray
+      }
+    )
+
+    finalExamResults.value = result
+
+    if (result.passed) {
+      await completeLessonWithScore(lesson, result.score)
     }
-
-    if (finalExamAnswers.value[idx] === correctAnswers[idx]) {
-      correctCount++
-    }
-  })
-
-  const passingScore = lesson.exercise_data?.passing_score || 70
-  const score = Math.round((correctCount / finalExamAnomalies.value.length) * 100)
-  const passed = score >= passingScore
-
-  finalExamResults.value = {
-    passed,
-    score,
-    message: passed
-      ? '¡Felicitaciones! Has aprobado el examen final.'
-      : `Necesitas al menos ${passingScore}% para aprobar. Tu score: ${score}%`,
-    correct_answers: correctAnswers
+  } catch (error: any) {
+    console.error('Error submitting final exam:', error)
+    alert('Error al enviar el examen: ' + (error.response?.data?.detail || error.message))
+  } finally {
+    finalExamSubmitting.value = false
   }
+}
 
-  if (passed) {
-    await completeLessonWithScore(lesson, score)
-  }
+function resetFinalExam() {
+  finalExamAnswers.value = {}
+  finalExamResults.value = null
 }
 
 function selectAnswer(questionId: string, optionIndex: number) {
@@ -519,37 +660,143 @@ function getSeverityText(score: number) {
 async function downloadCertificate() {
   try {
     const cert = await courseService.getCertificate(authStore.selectedProjectId!)
-    const certContent = generateCertificate(cert)
-    const blob = new Blob([certContent], { type: 'application/pdf' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `certificado_${authStore.selectedProjectId}.pdf`
-    a.click()
-    URL.revokeObjectURL(url)
+    const certHTML = generateCertificateHTML(cert)
+
+    // Open in new window for printing/saving as PDF
+    const printWindow = window.open('', '_blank')
+    if (printWindow) {
+      printWindow.document.write(certHTML)
+      printWindow.document.close()
+      setTimeout(() => {
+        printWindow.focus()
+        printWindow.print()
+      }, 250)
+    }
   } catch (error) {
     console.error('Error downloading certificate:', error)
   }
 }
 
-function generateCertificate(cert: any) {
+function generateCertificateHTML(cert: any) {
+  const projectName = getProjectName(authStore.selectedProjectId)
+  const userName = authStore.user?.username || authStore.user?.email || 'Usuario'
+  const date = new Date(cert.issued_at).toLocaleDateString('es-ES', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  })
+
   return `
-    =====================================================
-       CERTIFICADO DE COMPLETACIÓN - LOGSANOMALTY
-    =====================================================
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Certificado - LogsAnomaly</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Georgia', serif;
+      background: #f5f5f5;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+    .certificate {
+      background: white;
+      width: 210mm;
+      min-height: 297mm;
+      padding: 40px;
+      border: 10px solid #667eea;
+      position: relative;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+    }
+    .certificate::before {
+      content: '';
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      right: 10px;
+      bottom: 10px;
+      border: 2px solid #764ba2;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 30px;
+    }
+    .logo {
+      font-size: 24px;
+      font-weight: bold;
+      color: #667eea;
+      margin-bottom: 10px;
+    }
+    .title {
+      font-size: 28px;
+      color: #333;
+      margin-bottom: 30px;
+    }
+    .content {
+      text-align: center;
+      line-height: 1.8;
+      color: #555;
+    }
+    .content p {
+      margin-bottom: 20px;
+    }
+    .user-name {
+      font-size: 24px;
+      font-weight: bold;
+      color: #333;
+      margin: 20px 0;
+    }
+    .course-name {
+      font-size: 18px;
+      font-style: italic;
+      color: #667eea;
+      margin-bottom: 30px;
+    }
+    .footer {
+      margin-top: 40px;
+      text-align: center;
+      font-size: 12px;
+      color: #999;
+    }
+    .badge {
+      display: inline-block;
+      margin: 20px 0;
+      font-size: 40px;
+    }
+  </style>
+</head>
+<body>
+  <div class="certificate">
+    <div class="header">
+      <div class="logo">LogsAnomaly</div>
+      <div class="title">CERTIFICADO DE COMPLETACIÓN</div>
+    </div>
 
-    Este certifica que el usuario:
-    ${authStore.user?.username || 'Usuario'}
+    <div class="content">
+      <p>Este certifica que</p>
+      <div class="user-name">${userName}</div>
 
-    Ha completado satisfactoriamente el curso:
-    "Interpretación de Logs y Detección de Anomalías"
+      <p>Ha completado satisfactoriamente el curso</p>
+      <div class="course-name">"Interpretación de Logs y Detección de Anomalías"</div>
 
-    Proyecto: ${getProjectName(authStore.selectedProjectId)}
-    Fecha de finalización: ${new Date(cert.issued_at).toLocaleDateString()}
+      <p><strong>Proyecto:</strong> ${projectName}</p>
+      <p><strong>Fecha de finalización:</strong> ${date}</p>
 
-    Emitido por LogsAnomaly v2.0
+      <div class="badge">🏆</div>
 
-    =====================================================
+      <p>Emitido por LogsAnomaly v2.0</p>
+    </div>
+
+    <div class="footer">
+      Certificado ID: ${authStore.selectedProjectId}_${cert.issued_at}
+    </div>
+  </div>
+</body>
+</html>
   `
 }
 
@@ -583,6 +830,23 @@ watch(() => authStore.selectedProjectId, async (newProjectId) => {
     await loadCourseProgress()
   }
 }, { immediate: true })
+
+// Watch tab changes to reload course lists
+watch(activeTab, (newTab) => {
+  // Tab 0: Published (no reload needed, handled by selectedProjectId watch)
+  // Tab 1: Draft
+  if (newTab === 1 && draftPanelRef.value) {
+    draftPanelRef.value.loadCourses?.()
+  }
+  // Tab 2: Pending
+  else if (newTab === 2 && pendingPanelRef.value) {
+    pendingPanelRef.value.loadCourses?.()
+  }
+  // Tab 3: Approved
+  else if (newTab === 3 && approvedPanelRef.value) {
+    approvedPanelRef.value.loadCourses?.()
+  }
+})
 
 onMounted(() => {
   loadCourseProgress()
@@ -1086,6 +1350,109 @@ defineExpose({
 .exam-option.selected {
   border-color: #667eea;
   background: #eff6ff;
+}
+
+.exam-question-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.exam-question-header h5 {
+  margin: 0;
+  color: #334155;
+}
+
+.exam-answer-form {
+  margin-top: 1rem;
+}
+
+.form-group {
+  margin-bottom: 1.5rem;
+}
+
+.form-group label {
+  display: block;
+  font-weight: 500;
+  margin-bottom: 0.5rem;
+  color: #475569;
+}
+
+.severity-option {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.exam-question-result {
+  margin-top: 1rem;
+  padding: 1rem;
+  background: #f8fafc;
+  border-radius: 8px;
+}
+
+.result-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.result-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border-radius: 4px;
+}
+
+.result-item.correct {
+  background: #ecfdf5;
+  color: #166534;
+}
+
+.result-item:not(.correct) {
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.exam-actions {
+  display: flex;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.score-display {
+  display: flex;
+  justify-content: center;
+  margin-top: 1.5rem;
+}
+
+.score-circle {
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border: 8px solid #cbd5e1;
+  background: white;
+}
+
+.score-circle.passed {
+  border-color: #10b981;
+  background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+}
+
+.score-number {
+  font-size: 2.5rem;
+  font-weight: bold;
+  color: #1e293b;
+}
+
+.score-label {
+  font-size: 0.85rem;
+  color: #64748b;
 }
 
 .exam-results {
