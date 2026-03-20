@@ -32,23 +32,26 @@ pwd_context = CryptContext(
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
     Verifica si una contraseña en texto plano coincide con el hash almacenado.
-    
+
     Nota: Bcrypt tiene una limitación de 72 bytes. Truncamos explícitamente
     de la misma manera que en get_password_hash para asegurar consistencia.
-    
+
     Args:
         plain_password: Contraseña en texto plano
         hashed_password: Hash de la contraseña almacenado
-    
+
     Returns:
         True si coinciden, False en caso contrario
     """
+    # Limpiar el hash de posibles espacios/nuevas líneas
+    hashed_password = hashed_password.strip()
+
     # Truncar de la misma manera que en get_password_hash para consistencia
     password_bytes = plain_password.encode('utf-8')
     if len(password_bytes) > 72:
         password_bytes = password_bytes[:72]
         plain_password = password_bytes.decode('utf-8', errors='ignore')
-    
+
     return pwd_context.verify(plain_password, hashed_password)
 
 

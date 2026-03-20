@@ -52,7 +52,8 @@ class DatabaseManager:
         print("✅ PostgreSQL conectado (schemas: auth, processing, learning, public)")
     
     async def connect_redis(self):
-        redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+        # Redis requiere contraseña - usar REDIS_URL desde env o valor por defecto con contraseña
+        redis_url = os.getenv("REDIS_URL", "redis://:redis_change_this_password_in_production@redis:6379/0")
         self.redis_client = redis.from_url(redis_url)
         await self.redis_client.ping()
         print("✅ Redis conectado")
