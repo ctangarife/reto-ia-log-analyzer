@@ -2,6 +2,7 @@
  * Course Progress Service
  * Handles user-facing course progress and completion
  */
+import api from './api'
 
 export interface CourseModule {
   id: string
@@ -75,80 +76,55 @@ export interface CertificateResponse {
 }
 
 class CourseProgressService {
-  private baseUrl = '/api/projects'
+  private baseUrl = '/projects'
 
   /**
    * Get complete course progress for a project
    */
   async getProgress(projectId: string): Promise<CourseProgressResponse> {
-    const response = await fetch(`${this.baseUrl}/${projectId}/course/progress`, {
-      headers: this.getHeaders()
-    })
-    if (!response.ok) throw new Error('Failed to get course progress')
-    return response.json()
+    const response = await api.get(`${this.baseUrl}/${projectId}/course/progress`)
+    return response.data
   }
 
   /**
    * Mark a lesson as completed
    */
   async completeLesson(projectId: string, lessonId: string, data?: LessonCompleteRequest): Promise<{ message: string; score?: number }> {
-    const response = await fetch(`${this.baseUrl}/${projectId}/course/lessons/${lessonId}/complete`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(data || {})
-    })
-    if (!response.ok) throw new Error('Failed to complete lesson')
-    return response.json()
+    const response = await api.post(`${this.baseUrl}/${projectId}/course/lessons/${lessonId}/complete`, data || {})
+    return response.data
   }
 
   /**
    * Get exercises for a lesson
    */
   async getExercises(projectId: string, lessonId: string, count = 5): Promise<{ exercises: Exercise[] }> {
-    const response = await fetch(`${this.baseUrl}/${projectId}/course/exercises?lesson_id=${lessonId}&count=${count}`, {
-      headers: this.getHeaders()
+    const response = await api.get(`${this.baseUrl}/${projectId}/course/exercises`, {
+      params: { lesson_id: lessonId, count: count }
     })
-    if (!response.ok) throw new Error('Failed to get exercises')
-    return response.json()
+    return response.data
   }
 
   /**
    * Validate exercise answer
    */
   async validateExercise(projectId: string, data: ExerciseValidationRequest): Promise<ExerciseValidationResponse> {
-    const response = await fetch(`${this.baseUrl}/${projectId}/course/exercises/validate`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(data)
-    })
-    if (!response.ok) throw new Error('Failed to validate exercise')
-    return response.json()
+    const response = await api.post(`${this.baseUrl}/${projectId}/course/exercises/validate`, data)
+    return response.data
   }
 
   /**
    * Get certificate data
    */
   async getCertificate(projectId: string): Promise<CertificateResponse> {
-    const response = await fetch(`${this.baseUrl}/${projectId}/course/certificate`, {
-      headers: this.getHeaders()
-    })
-    if (!response.ok) throw new Error('Failed to get certificate')
-    return response.json()
+    const response = await api.get(`${this.baseUrl}/${projectId}/course/certificate`)
+    return response.data
   }
 
   /**
-   * Get badge SVG
+   * Get badge URL
    */
-  async getBadgeUrl(projectId: string): string {
-    return `${this.baseUrl}/${projectId}/course/badge/current`
-  }
-
-  private getHeaders(): HeadersInit {
-    const token = localStorage.getItem('auth_token')
-    return {
-      'Content-Type': 'application/json',
-      ...(token && { 'Authorization': `Bearer ${token}` })
-    }
+  getBadgeUrl(projectId: string): string {
+    return `/api/${this.baseUrl}/${projectId}/course/badge/current`
   }
 }
 

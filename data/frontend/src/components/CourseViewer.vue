@@ -171,6 +171,7 @@ import ProgressBar from 'primevue/progressbar'
 import Dialog from 'primevue/dialog'
 import ProgressSpinner from 'primevue/progressspinner'
 import InlineMessage from 'primevue/inlinemessage'
+import DOMPurify from 'dompurify'
 
 import { courseProgressService, type CourseProgressResponse, type CourseLesson } from '@/services/courseProgressService'
 
@@ -253,15 +254,21 @@ const downloadCertificate = async () => {
 }
 
 const renderMarkdown = (content: string) => {
-  // Simple markdown rendering (in production, use a proper markdown library)
+  // Simple markdown rendering with DOMPurify sanitization
   if (!content) return ''
 
-  return content
+  const rawHtml = content
     .replace(/^### (.*$)/gim, '<h4>$1</h4>')
     .replace(/^## (.*$)/gim, '<h3>$1</h3>')
     .replace(/^# (.*$)/gim, '<h2>$1</h2>')
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     .replace(/\n/g, '<br>')
+
+  return DOMPurify.sanitize(rawHtml, {
+    ALLOWED_TAGS: ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'br'],
+    ALLOWED_ATTR: [],
+    ALLOW_DATA_ATTR: false
+  })
 }
 
 const formatDate = (dateStr?: string) => {

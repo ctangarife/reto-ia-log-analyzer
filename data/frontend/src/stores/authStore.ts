@@ -1,9 +1,10 @@
 /**
  * Store de autenticación y permisos RBAC
+ * SEGURIDAD: Token manejado vía httpOnly cookies (no en localStorage)
  */
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import { login, logout, getCurrentUser, isAuthenticated } from '../services/authService'
+import { login, logout as apiLogout, getCurrentUser, getStoredUserInfo } from '../services/authService'
 import api from '../services/api'
 import { canProcessLogs, canViewReports, canAccessMonitoring, hasPermission } from '../utils/permissions'
 import type { PermissionModule, PermissionAction } from '../utils/permissions'
@@ -39,36 +40,42 @@ export interface ProjectPermissions {
 }
 
 export interface UserInfo {
-  user_id: string
+  id: string
   username: string
+  email: string
   is_super_admin: boolean
+  full_name?: string
+  is_active: boolean
+  // Campos adicionales que el backend puede enviar
+  last_login?: string | null
+  created_at?: string
+  updated_at?: string
 }
 
 export const useAuthStore = defineStore('auth', () => {
   // Estado
   const user = ref<UserInfo | null>(null)
-  const token = ref<string | null>(null)
   const workspaces = ref<Workspace[]>([])
   const projects = ref<Record<string, Project[]>>({}) // workspace_id -> projects
   const projectPermissions = ref<Record<string, string[]>>({}) // project_id -> permissions
   const coursePermissions = ref<Record<string, string[]>>({}) // workspace_id -> learning permissions
   const courseRoles = ref<Record<string, string[]>>({}) // workspace_id -> roles
   const isLoading = ref(false)
-  const isInitialized = ref(false) // Nuevo: indica si la inicialización desde localStorage terminó
+  const isInitialized = ref(false)
+  const isAuthChecked = ref(false) // Indica si ya verificamos autenticación con el backend
   const selectedWorkspaceId = ref<string | null>(null)
   const selectedProjectId = ref<string | null>(null)
 
   // Computed
   const isLoggedIn = computed(() => {
-    if (!token.value) return false
-    return isAuthenticated()
+    return user.value !== null && isAuthChecked.value
   })
 
   const isSuperAdmin = computed(() => user.value?.is_super_admin === true)
 
   const selectedWorkspace = computed(() => {
     if (!selectedWorkspaceId.value) return null
-    return workspaces.value.find(w => 
+    return workspaces.value.find(w =>
       (w.workspace_id === selectedWorkspaceId.value) || (w.id === selectedWorkspaceId.value)
     ) || null
   })
@@ -90,7 +97,6 @@ export const useAuthStore = defineStore('auth', () => {
       isLoading.value = true
       const userInfo = await login({ username, password })
       user.value = userInfo
-      token.value = localStorage.getItem('auth_token')
 
       // Cargar datos del usuario
       await loadUserData()
@@ -102,20 +108,21 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  function logoutUser(): void {
+  async function logoutUser(): Promise<void> {
     user.value = null
-    token.value = null
     workspaces.value = []
     projects.value = {}
     projectPermissions.value = {}
+    coursePermissions.value = {}
+    courseRoles.value = {}
     selectedWorkspaceId.value = null
     selectedProjectId.value = null
-    logout()
+    isAuthChecked.value = false
+
+    await apiLogout()
   }
 
   async function loadUserData(): Promise<void> {
-    if (!isLoggedIn.value) return
-
     try {
       isLoading.value = true
 
@@ -124,8 +131,14 @@ export const useAuthStore = defineStore('auth', () => {
         const currentUser = await getCurrentUser()
         if (currentUser) {
           user.value = currentUser
+        } else {
+          // No hay usuario autenticado
+          isAuthChecked.value = true
+          return
         }
       }
+
+      isAuthChecked.value = true
 
       // Cargar workspaces
       await loadWorkspaces()
@@ -136,6 +149,7 @@ export const useAuthStore = defineStore('auth', () => {
       }
     } catch (error) {
       console.error('Error cargando datos del usuario:', error)
+      isAuthChecked.value = true
     } finally {
       isLoading.value = false
     }
@@ -157,7 +171,7 @@ export const useAuthStore = defineStore('auth', () => {
       workspaces.value = []
     }
   }
-  
+
   async function refreshWorkspaces(): Promise<void> {
     await loadWorkspaces()
   }
@@ -215,19 +229,21 @@ export const useAuthStore = defineStore('auth', () => {
     // Super admin tiene todos los permisos
     if (isSuperAdmin.value) {
       return [
-        'learning:create',
-        'learning:edit',
-        'learning:edit_own',
-        'learning:edit_lessons',
-        'learning:minor_edit',
-        'learning:review',
-        'learning:delete',
-        'learning:publish',
-        'learning:view_draft',
-        'learning:view_pending'
+        'courses:create',
+        'courses:edit',
+        'courses:edit_own',
+        'courses:edit_lessons',
+        'courses:minor_edit',
+        'courses:review',
+        'courses:delete',
+        'courses:publish',
+        'courses:view_draft',
+        'courses:view_pending'
       ]
     }
-    return coursePermissions.value[targetWorkspaceId] || []
+    // Transformar learning:* a courses:* para compatibilidad
+    const rawPerms = coursePermissions.value[targetWorkspaceId] || []
+    return rawPerms.map((p: string) => p.replace('learning:', 'courses:'))
   }
 
   function getCourseRoles(workspaceId?: string): string[] {
@@ -299,30 +315,38 @@ export const useAuthStore = defineStore('auth', () => {
     return false
   }
 
-  // Inicializar desde localStorage si existe token (async para que el guard pueda esperar)
+  // Inicializar - verificar autenticación con el backend
   async function initialize(): Promise<void> {
-    const storedToken = localStorage.getItem('auth_token')
-    const storedUser = localStorage.getItem('user_info')
-
-    if (storedToken && storedUser && isAuthenticated()) {
-      token.value = storedToken
-      try {
-        user.value = JSON.parse(storedUser)
-        await loadUserData()
-      } catch (error) {
-        console.error('Error parseando usuario almacenado:', error)
-        logoutUser()
-      }
+    // Cargar usuario desde localStorage para usar mientras verificamos
+    const storedUser = getStoredUserInfo()
+    if (storedUser) {
+      user.value = storedUser
     }
 
-    // Marcar como inicializado sin importar el resultado
+    // Verificar autenticación con el backend
+    try {
+      const currentUser = await getCurrentUser()
+      if (currentUser) {
+        user.value = currentUser
+        await loadUserData()
+      } else {
+        // No hay sesión válida
+        user.value = null
+      }
+    } catch (error) {
+      // Error verificando sesión, limpiar estado
+      console.error('Error verificando sesión:', error)
+      user.value = null
+    }
+
+    // Marcar como inicializado
     isInitialized.value = true
+    isAuthChecked.value = true
   }
 
   return {
     // Estado
     user,
-    token,
     workspaces,
     projects,
     projectPermissions,
@@ -330,6 +354,7 @@ export const useAuthStore = defineStore('auth', () => {
     courseRoles,
     isLoading,
     isInitialized,
+    isAuthChecked,
     selectedWorkspaceId,
     selectedProjectId,
 

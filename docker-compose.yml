@@ -23,7 +23,7 @@ services:
       - mongodb_data:/data/db
       - ./db/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27017:27017"  # Solo localhost - seguridad
     networks:
       logs_analyze_net:
         aliases:
@@ -48,7 +48,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"  # Solo localhost - seguridad
     networks:
       logs_analyze_net:
         aliases:
@@ -71,7 +71,7 @@ services:
       - redis_data:/data
       - ./build/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"  # Solo localhost - seguridad
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
     networks:
       logs_analyze_net:
@@ -91,8 +91,8 @@ services:
     image: qdrant/qdrant:latest
     container_name: logs-analyze-qdrant
     ports:
-      - "6333:6333"  # API REST
-      - "6334:6334"  # gRPC
+      - "127.0.0.1:6333:6333"  # API REST - solo localhost
+      - "127.0.0.1:6334:6334"  # gRPC - solo localhost
     volumes:
       # Volumen nombrado para evitar problemas de corrupción en Windows
       - qdrant_storage:/qdrant/storage

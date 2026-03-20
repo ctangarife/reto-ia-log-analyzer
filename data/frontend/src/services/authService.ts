@@ -1,41 +1,35 @@
 /**
  * Servicio de autenticación
+ * SEGURIDAD: El token JWT ahora se maneja vía httpOnly cookies (no en localStorage)
  */
 import api from './api'
 import axios from 'axios'
-import { decodeJWT, getUserFromToken } from '../utils/jwt'
 
 export interface LoginCredentials {
   username: string
   password: string
 }
 
-export interface LoginResponse {
-  access_token: string
-  token_type: string
-  user: {
-    user_id: string
-    username: string
-    is_super_admin: boolean
-  }
-}
-
 export interface UserInfo {
-  user_id: string
+  id: string
   username: string
+  email: string
   is_super_admin: boolean
+  full_name?: string
+  is_active: boolean
 }
 
 /**
- * Realiza login y almacena el token
+ * Realiza login.
+ * NOTA: El token se maneja vía httpOnly cookie, no se almacena en localStorage.
  */
 export async function login(credentials: LoginCredentials): Promise<UserInfo> {
   try {
-    const response = await api.post<LoginResponse>('/auth/login', credentials)
-    const { access_token, user } = response.data
+    const response = await api.post('/auth/login', credentials)
+    // Backend ahora retorna directamente UserInfo (no { access_token, user })
+    const user = response.data as UserInfo
 
-    // Almacenar token
-    localStorage.setItem('auth_token', access_token)
+    // Almacenar user_info para display (no incluye token)
     localStorage.setItem('user_info', JSON.stringify(user))
 
     return user
@@ -48,66 +42,47 @@ export async function login(credentials: LoginCredentials): Promise<UserInfo> {
 }
 
 /**
- * Obtiene información del usuario actual
+ * Obtiene información del usuario actual desde el backend
  */
 export async function getCurrentUser(): Promise<UserInfo | null> {
   try {
     const response = await api.get<UserInfo>('/auth/me')
     return response.data
   } catch (error) {
-    // Si falla, intentar obtener del token almacenado
-    const token = localStorage.getItem('auth_token')
-    if (token) {
-      const user = getUserFromToken(token)
-      if (user) {
-        return {
-          user_id: user.user_id,
-          username: user.username || '',
-          is_super_admin: user.is_super_admin || false
-        }
-      }
-    }
     return null
   }
 }
 
 /**
- * Cierra sesión
+ * Cierra sesión llamando al backend para eliminar la cookie
  */
-export function logout(): void {
-  localStorage.removeItem('auth_token')
-  localStorage.removeItem('user_info')
-  window.location.href = '/login'
+export async function logout(): Promise<void> {
+  try {
+    await api.post('/auth/logout')
+  } catch (error) {
+    // Continuar aunque falle el llamado al backend
+    console.warn('Error al llamar logout en backend:', error)
+  } finally {
+    // Limpiar datos locales
+    localStorage.removeItem('user_info')
+    window.location.href = '/login'
+  }
 }
 
 /**
- * Verifica si hay un token válido almacenado
+ * Obtiene la información del usuario desde localStorage (solo para display)
+ * NOTA: Esto no incluye el token, que está en una httpOnly cookie
  */
-export function isAuthenticated(): boolean {
-  const token = localStorage.getItem('auth_token')
-  if (!token) {
-    return false
-  }
-
-  // Verificar expiración (si el token tiene exp)
-  const user = getUserFromToken(token)
-  if (user?.exp) {
-    const expirationTime = user.exp * 1000
-    if (Date.now() >= expirationTime) {
-      localStorage.removeItem('auth_token')
-      localStorage.removeItem('user_info')
-      return false
+export function getStoredUserInfo(): UserInfo | null {
+  const stored = localStorage.getItem('user_info')
+  if (stored) {
+    try {
+      return JSON.parse(stored)
+    } catch {
+      return null
     }
   }
-
-  return true
-}
-
-/**
- * Obtiene el token almacenado
- */
-export function getToken(): string | null {
-  return localStorage.getItem('auth_token')
+  return null
 }
 
 /**
@@ -137,30 +112,11 @@ export interface RegisterResponse {
 
 /**
  * Registra un nuevo usuario
- * Nota: Según la API, esto requiere permisos de super administrador
- * Si el backend permite registro público, funcionará. Si no, retornará 403.
+ * NOTA: La cookie httpOnly se maneja automáticamente por el navegador
  */
 export async function registerUser(data: RegisterData): Promise<RegisterResponse> {
   try {
-    // Crear instancia de axios sin interceptores para permitir registro público
-    // Esto permite registro sin token si el backend lo soporta
-    const token = getToken()
-    
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json'
-    }
-    
-    // Solo agregar token si existe (para super admins que crean usuarios)
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`
-    }
-
-    // Usar axios directamente sin interceptores para permitir registro público
-    // Usar solo '/users' porque baseURL ya incluye '/api'
-    const response = await axios.post<RegisterResponse>('/users', data, { 
-      headers,
-      baseURL: '/api'
-    })
+    const response = await api.post<RegisterResponse>('/users', data)
     return response.data
   } catch (error: any) {
     if (error.response?.status === 409) {

@@ -297,6 +297,7 @@ import CourseReviewPanel from './CourseReviewPanel.vue'
 import CourseRoleManager from './CourseRoleManager.vue'
 import { useToast } from 'primevue/usetoast'
 import { courseGenerationService, type CourseContent } from '@/services/courseGenerationService'
+import DOMPurify from 'dompurify'
 
 interface Props {
   projectId?: string
@@ -429,12 +430,18 @@ const getModuleLessons = (moduleId: string) => {
 
 const renderMarkdown = (content: string) => {
   if (!content) return ''
-  return content
+  // Simple markdown-like replacements
+  const rawHtml = content
     .replace(/^### (.*$)/gim, '<h4>$1</h4>')
     .replace(/^## (.*$)/gim, '<h3>$1</h3>')
     .replace(/^# (.*$)/gim, '<h2>$1</h2>')
     .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
     .replace(/\n/g, '<br>')
+  return DOMPurify.sanitize(rawHtml, {
+    ALLOWED_TAGS: ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'br'],
+    ALLOWED_ATTR: [],
+    ALLOW_DATA_ATTR: false
+  })
 }
 
 const getStatusSeverity = (status: string) => {

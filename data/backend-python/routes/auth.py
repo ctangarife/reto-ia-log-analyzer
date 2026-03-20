@@ -3,55 +3,63 @@ Rutas de autenticación
 Endpoints para login y obtención de información del usuario actual
 """
 import logging
-from fastapi import APIRouter, HTTPException, status, Depends
+from fastapi import APIRouter, HTTPException, status, Depends, Response
+from fastapi.responses import JSONResponse
 from models.rbac_models import LoginRequest, TokenResponse, UserResponse
 from services.auth_service import authenticate_user, create_access_token
 from middleware.auth_middleware import get_current_user, CurrentUser
 from config.database import db_manager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post("/login")
 async def login(login_data: LoginRequest):
     """
     Endpoint de autenticación de usuarios.
-    
-    Valida credenciales (username/password) y retorna un token JWT.
-    
+
+    Valida credenciales (username/password) y retorna un token JWT via httpOnly cookie.
+
     Args:
         login_data: Datos de login (username y password)
-    
+
     Returns:
-        TokenResponse con el token JWT y información del usuario
-    
+        UserResponse con información del usuario (token via cookie)
+
     Raises:
         HTTPException: Si las credenciales son inválidas
     """
+    from datetime import timezone
+    from fastapi.responses import JSONResponse
+
     # Autenticar usuario
     user_data = await authenticate_user(login_data.username, login_data.password)
-    
+
     if not user_data:
         logger.warning(f"Intento de login fallido para usuario: {login_data.username}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Credenciales inválidas"
         )
-    
+
     # Crear token JWT
     access_token = create_access_token(
         user_id=user_data["user_id"],
         username=user_data["username"],
         is_super_admin=user_data["is_super_admin"]
     )
-    
+
     # Obtener expiración en segundos
     from services.auth_service import JWT_EXPIRATION_HOURS
-    expires_in = JWT_EXPIRATION_HOURS * 3600
-    
+    expires_in_seconds = JWT_EXPIRATION_HOURS * 3600
+
+    # Crear fecha UTC con timezone aware
+    now_utc = datetime.now(timezone.utc)
+    expire_date = now_utc + timedelta(seconds=expires_in_seconds)
+
     # Crear respuesta del usuario
     user_response = UserResponse(
         id=user_data["user_id"],
@@ -59,19 +67,52 @@ async def login(login_data: LoginRequest):
         email=user_data["email"],
         is_active=True,
         is_super_admin=user_data["is_super_admin"],
-        last_login=datetime.utcnow(),
-        created_at=datetime.utcnow(),  # Estos campos deberían venir de la BD
-        updated_at=datetime.utcnow()
+        last_login=now_utc,
+        created_at=now_utc,
+        updated_at=now_utc
     )
-    
+
+    # Crear respuesta JSON y setear cookie
+    response = JSONResponse(content=user_response.model_dump(mode='json'))
+
+    # Setear httpOnly cookie con el token
+    response.set_cookie(
+        key="auth_token",
+        value=access_token,
+        httponly=True,
+        secure=False,  # Cambiar a True en producción con HTTPS
+        samesite="lax",
+        max_age=expires_in_seconds,
+        expires=expire_date,
+        path="/"
+    )
+
     logger.info(f"Login exitoso para usuario: {user_data['username']}")
-    
-    return TokenResponse(
-        access_token=access_token,
-        token_type="bearer",
-        expires_in=expires_in,
-        user=user_response
+
+    return response
+
+
+@router.post("/logout")
+async def logout():
+    """
+    Endpoint para cerrar sesión.
+
+    Elimina la cookie del token.
+
+    Returns:
+        Mensaje de confirmación
+    """
+    from fastapi.responses import JSONResponse
+
+    response = JSONResponse(content={"message": "Sesión cerrada exitosamente"})
+    response.delete_cookie(
+        key="auth_token",
+        path="/"
     )
+
+    logger.info("Logout ejecutado")
+
+    return response
 
 
 @router.get("/me", response_model=UserResponse)

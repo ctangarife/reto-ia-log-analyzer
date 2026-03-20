@@ -2,6 +2,7 @@
  * Course RBAC Service
  * Manages course roles and permissions
  */
+import api from './api'
 
 export interface AssignRoleRequest {
   user_id: string
@@ -68,7 +69,7 @@ export interface BulkAssignResponse {
 }
 
 class CourseRBACService {
-  private baseUrl = '/api/course-rbac'
+  private baseUrl = '/course-rbac'
 
   /**
    * Initialize course permissions and roles (admin only)
@@ -79,131 +80,82 @@ class CourseRBACService {
     roles_created: string[]
     message: string
   }> {
-    const response = await fetch(`${this.baseUrl}/initialize`, {
-      method: 'POST',
-      headers: this.getHeaders()
-    })
-    if (!response.ok) throw new Error('Failed to initialize course RBAC')
-    return response.json()
+    const response = await api.post(`${this.baseUrl}/initialize`)
+    return response.data
   }
 
   /**
    * Get role and permission details
    */
   async getRoleDetails(): Promise<RoleDetailsResponse> {
-    const response = await fetch(`${this.baseUrl}/roles/details`, {
-      headers: this.getHeaders()
-    })
-    if (!response.ok) throw new Error('Failed to get role details')
-    return response.json()
+    const response = await api.get(`${this.baseUrl}/roles/details`)
+    return response.data
   }
 
   /**
    * Assign a course role to a user
    */
   async assignRole(workspaceId: string, data: AssignRoleRequest): Promise<RoleAssignmentResponse> {
-    const response = await fetch(`${this.baseUrl}/workspaces/${workspaceId}/roles/assign`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(data)
-    })
-    if (!response.ok) throw new Error('Failed to assign role')
-    return response.json()
+    const response = await api.post(`${this.baseUrl}/workspaces/${workspaceId}/roles/assign`, data)
+    return response.data
   }
 
   /**
    * Remove a course role from a user
    */
   async removeRole(workspaceId: string, data: RemoveRoleRequest): Promise<RoleAssignmentResponse> {
-    const response = await fetch(`${this.baseUrl}/workspaces/${workspaceId}/roles/remove`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(data)
-    })
-    if (!response.ok) throw new Error('Failed to remove role')
-    return response.json()
+    const response = await api.post(`${this.baseUrl}/workspaces/${workspaceId}/roles/remove`, data)
+    return response.data
   }
 
   /**
    * Get all workspace members with course roles
    */
   async getWorkspaceMembers(workspaceId: string, roleFilter?: string): Promise<WorkspaceMembersResponse> {
-    const url = roleFilter
-      ? `${this.baseUrl}/workspaces/${workspaceId}/members?role=${roleFilter}`
-      : `${this.baseUrl}/workspaces/${workspaceId}/members`
-
-    const response = await fetch(url, {
-      headers: this.getHeaders()
+    const response = await api.get(`${this.baseUrl}/workspaces/${workspaceId}/members`, {
+      params: roleFilter ? { role: roleFilter } : undefined
     })
-    if (!response.ok) throw new Error('Failed to get workspace members')
-    return response.json()
+    return response.data
   }
 
   /**
    * Get user's course permissions
    */
   async getUserPermissions(workspaceId: string, userId: string): Promise<UserCoursePermissionsResponse> {
-    const response = await fetch(`${this.baseUrl}/workspaces/${workspaceId}/users/${userId}/permissions`, {
-      headers: this.getHeaders()
-    })
-    if (!response.ok) throw new Error('Failed to get user permissions')
-    return response.json()
+    const response = await api.get(`${this.baseUrl}/workspaces/${workspaceId}/users/${userId}/permissions`)
+    return response.data
   }
 
   /**
    * Get current user's course permissions
    */
   async getMyPermissions(workspaceId: string): Promise<UserCoursePermissionsResponse> {
-    const response = await fetch(`${this.baseUrl}/workspaces/${workspaceId}/users/me/permissions`, {
-      headers: this.getHeaders()
-    })
-    if (!response.ok) throw new Error('Failed to get my permissions')
-    return response.json()
+    const response = await api.get(`${this.baseUrl}/workspaces/${workspaceId}/users/me/permissions`)
+    return response.data
   }
 
   /**
    * Check if current user has a specific permission
    */
   async checkPermission(workspaceId: string, permission: string): Promise<{ has_permission: boolean }> {
-    const response = await fetch(`${this.baseUrl}/workspaces/${workspaceId}/check-permission/${permission}`, {
-      headers: this.getHeaders()
-    })
-    if (!response.ok) throw new Error('Failed to check permission')
-    return response.json()
+    const response = await api.get(`${this.baseUrl}/workspaces/${workspaceId}/check-permission/${permission}`)
+    return response.data
   }
 
   /**
    * Bulk assign roles to multiple users
    */
   async bulkAssign(workspaceId: string, data: BulkAssignRequest): Promise<BulkAssignResponse> {
-    const response = await fetch(`${this.baseUrl}/workspaces/${workspaceId}/roles/bulk-assign`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(data)
-    })
-    if (!response.ok) throw new Error('Failed to bulk assign roles')
-    return response.json()
+    const response = await api.post(`${this.baseUrl}/workspaces/${workspaceId}/roles/bulk-assign`, data)
+    return response.data
   }
 
   /**
    * Bulk remove roles from multiple users
    */
   async bulkRemove(workspaceId: string, data: BulkAssignRequest): Promise<BulkAssignResponse> {
-    const response = await fetch(`${this.baseUrl}/workspaces/${workspaceId}/roles/bulk-remove`, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(data)
-    })
-    if (!response.ok) throw new Error('Failed to bulk remove roles')
-    return response.json()
-  }
-
-  private getHeaders(): HeadersInit {
-    const token = localStorage.getItem('auth_token')
-    return {
-      'Content-Type': 'application/json',
-      ...(token && { 'Authorization': `Bearer ${token}` })
-    }
+    const response = await api.post(`${this.baseUrl}/workspaces/${workspaceId}/roles/bulk-remove`, data)
+    return response.data
   }
 }
 

@@ -185,6 +185,11 @@ function clearSelectedFile() {
 async function processSelectedFile() {
   if (!selectedFile.value) return
 
+  if (!authStore.selectedProjectId) {
+    alert('Por favor selecciona un proyecto antes de procesar archivos')
+    return
+  }
+
   if (!canProcessLogs.value) {
     alert('No tienes permiso para procesar logs en este proyecto')
     return

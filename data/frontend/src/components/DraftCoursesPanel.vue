@@ -56,7 +56,7 @@
           <div class="course-actions">
             <Button
               icon="pi pi-eye"
-              label="Ver"
+              label="Ver Contenido"
               severity="secondary"
               outlined
               @click="viewCourse(course)"
@@ -90,7 +90,7 @@
     </div>
 
     <!-- Course Content Dialog -->
-    <Dialog v-model:visible="showContentDialog" modal header="Contenido del Curso" :style="{ width: '80vw' }">
+    <Dialog v-model:visible="showContentDialog" modal header="Contenido del Curso" :style="{ width: '90vw' }" :contentStyle="{ maxHeight: '70vh', overflow: 'auto' }">
       <div v-if="loadingContent" class="flex justify-content-center p-4">
         <ProgressSpinner />
       </div>
@@ -98,7 +98,7 @@
         <div class="course-header mb-3">
           <h3>{{ courseContent.course.name }}</h3>
           <p class="text-color-secondary">{{ courseContent.course.description }}</p>
-          <div class="flex gap-2 mt-2">
+          <div class="flex gap-2 mt-2 flex-wrap">
             <Tag :value="courseContent.course.status" severity="secondary" />
             <Tag :value="courseContent.course.scope" severity="info" />
             <Chip :label="`${courseContent.modules.length} módulos`" size="small" />
@@ -117,7 +117,16 @@
                 <Chip :label="`${getModuleLessonCount(module.id)} lecciones`" size="small" />
               </div>
             </template>
-            <DataTable :value="getModuleLessons(module.id)" stripedRows size="small">
+            <DataTable
+              :value="getModuleLessons(module.id)"
+              stripedRows
+              size="small"
+              v-model:selection="selectedLesson"
+              selectionMode="single"
+              @row-select="viewLessonContent"
+              @row-unselect="clearLessonContent"
+            >
+              <Column selectionMode="single" headerStyle="width: 3rem"></Column>
               <Column field="lesson_order" header="#" style="width: 50px" />
               <Column field="title" header="Lección" />
               <Column header="Tipo" style="width: 120px">
@@ -129,7 +138,84 @@
             </DataTable>
           </AccordionTab>
         </Accordion>
+
+        <!-- Lesson Content Preview -->
+        <div v-if="selectedLessonContent" class="lesson-content-preview mt-4 p-3 surface-ground border-round">
+          <div class="flex justify-content-between align-items-center mb-3">
+            <h4 class="m-0">{{ selectedLessonContent.title }}</h4>
+            <Button
+              icon="pi pi-pencil"
+              label="Editar Lección"
+              size="small"
+              text
+              @click="openLessonEdit(selectedLessonContent)"
+            />
+          </div>
+          <Divider />
+          <div class="lesson-content-text" v-html="renderMarkdown(selectedLessonContent.content)"></div>
+        </div>
       </div>
+    </Dialog>
+
+    <!-- Lesson Edit Dialog -->
+    <Dialog v-model:visible="showLessonEditDialog" modal header="Editar Lección" :style="{ width: '70vw' }">
+      <div v-if="editingLesson" class="lesson-edit-form">
+        <div class="field">
+          <label for="lesson-title">Título</label>
+          <InputText id="lesson-title" v-model="editingLesson.title" class="w-full" />
+        </div>
+
+        <div class="field">
+          <label for="lesson-content">Contenido (Markdown)</label>
+          <Textarea
+            id="lesson-content"
+            v-model="editingLesson.content"
+            rows="15"
+            class="w-full"
+            autoResize
+          />
+          <small class="text-color-secondary">
+            Puedes usar Markdown para dar formato. Soporta: **negrita**, *cursiva*, # encabezados, - listas, etc.
+          </small>
+        </div>
+
+        <div class="field">
+          <label>Opciones de edición</label>
+          <div class="flex align-items-center gap-3">
+            <Checkbox v-model="isMinorEdit" inputId="minor-edit" binary />
+            <label for="minor-edit">Edición menor (no requiere reaprobación)</label>
+          </div>
+          <small class="text-color-secondary block mt-1">
+            Las ediciones menores se limitan a cambios de menos del 10% del contenido o máximo 500 caracteres.
+          </small>
+        </div>
+
+        <div class="field">
+          <label for="change-description">Descripción del cambio</label>
+          <InputText
+            id="change-description"
+            v-model="changeDescription"
+            placeholder="Describe qué modificaste en esta lección"
+            class="w-full"
+          />
+        </div>
+
+        <!-- Preview -->
+        <div class="field">
+          <label>Vista Previa</label>
+          <div class="preview-box p-3 surface-ground border-round" v-html="renderMarkdown(editingLesson?.content || '')"></div>
+        </div>
+      </div>
+
+      <template #footer>
+        <Button label="Cancelar" text @click="showLessonEditDialog = false" />
+        <Button
+          label="Guardar Cambios"
+          @click="saveLessonEdit"
+          :loading="savingLesson"
+          :disabled="!changeDescription?.trim()"
+        />
+      </template>
     </Dialog>
 
     <!-- Course Generate Dialog -->
@@ -145,7 +231,8 @@
 
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue'
-import { courseGenerationService, type CourseContent } from '../services/courseGenerationService'
+import { courseGenerationService, type CourseContent, type CourseModule, type Lesson } from '../services/courseGenerationService'
+import { lessonService } from '../services/lessonService'
 import Card from 'primevue/card'
 import Button from 'primevue/button'
 import Tag from 'primevue/tag'
@@ -156,9 +243,15 @@ import AccordionTab from 'primevue/accordiontab'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import ProgressSpinner from 'primevue/progressspinner'
+import InputText from 'primevue/inputtext'
+import Textarea from 'primevue/textarea'
+import Checkbox from 'primevue/checkbox'
+import Divider from 'primevue/divider'
 import { useToast } from 'primevue/usetoast'
 import { useAuthStore } from '../stores/authStore'
 import CourseGenerateDialog from './CourseGenerateDialog.vue'
+import DOMPurify from 'dompurify'
+import { marked } from 'marked'
 
 interface Props {
   workspaceId?: string
@@ -195,6 +288,27 @@ const courseContent = ref<CourseContent | null>(null)
 const activeModuleIndex = ref<number[]>([])
 const generateDialog = ref()
 
+// Lesson selection and editing
+const selectedLesson = ref<Lesson | null>(null)
+const selectedLessonContent = ref<Lesson | null>(null)
+const showLessonEditDialog = ref(false)
+const editingLesson = ref<Lesson | null>(null)
+const isMinorEdit = ref(false)
+const changeDescription = ref('')
+const savingLesson = ref(false)
+
+// Markdown rendering with DOMPurify
+function renderMarkdown(content: string): string {
+  if (!content) return '<p class="text-color-secondary">Sin contenido</p>'
+  const rawHtml = marked(content)
+  return DOMPurify.sanitize(rawHtml, {
+    ALLOWED_TAGS: ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'br', 'ul', 'ol', 'li', 'code', 'pre', 'blockquote', 'a', 'hr', 'table', 'thead', 'tbody', 'tr', 'th', 'td'],
+    ALLOWED_ATTR: ['href', 'title', 'class', 'target'],
+    ALLOW_DATA_ATTR: false,
+    ALLOW_UNKNOWN_PROTOCOLS: false
+  })
+}
+
 async function loadCourses() {
   if (!props.workspaceId) return
 
@@ -219,10 +333,16 @@ function viewCourse(course: Course) {
   showContentDialog.value = true
   loadingContent.value = true
   courseContent.value = null
+  selectedLessonContent.value = null
+  selectedLesson.value = null
 
   courseGenerationService.getCourseContent(course.id)
     .then(content => {
       courseContent.value = content
+      // Open first module by default
+      if (content.modules.length > 0) {
+        activeModuleIndex.value = [0]
+      }
     })
     .catch(e => {
       console.error('Error loading course content:', e)
@@ -239,9 +359,79 @@ function viewCourse(course: Course) {
     })
 }
 
+function viewLessonContent() {
+  if (selectedLesson.value) {
+    selectedLessonContent.value = selectedLesson.value
+  }
+}
+
+function clearLessonContent() {
+  selectedLessonContent.value = null
+}
+
 function editCourse(course: Course) {
-  emit('courseSelected', course)
-  // TODO: Open edit dialog
+  // Open the content dialog for editing
+  viewCourse(course)
+}
+
+function openLessonEdit(lesson: Lesson) {
+  editingLesson.value = { ...lesson }
+  isMinorEdit.value = false
+  changeDescription.value = ''
+  showLessonEditDialog.value = true
+}
+
+async function saveLessonEdit() {
+  if (!editingLesson.value || !changeDescription.value.trim()) {
+    toast.add({
+      severity: 'warn',
+      summary: 'Advertencia',
+      detail: 'Por favor describe los cambios realizados',
+      life: 3000
+    })
+    return
+  }
+
+  savingLesson.value = true
+  try {
+    await lessonService.updateLesson(
+      editingLesson.value.id,
+      {
+        title: editingLesson.value.title,
+        content: editingLesson.value.content,
+        is_minor_edit: isMinorEdit.value,
+        change_description: changeDescription.value
+      }
+    )
+
+    toast.add({
+      severity: 'success',
+      summary: 'Éxito',
+      detail: isMinorEdit.value ? 'Edición menor guardada' : 'Lección actualizada (pendiente aprobación)',
+      life: 3000
+    })
+
+    // Refresh the course content
+    if (courseContent.value?.course.id) {
+      const courseId = courseContent.value.course.id
+      courseGenerationService.getCourseContent(courseId)
+        .then(content => {
+          courseContent.value = content
+        })
+    }
+
+    showLessonEditDialog.value = false
+  } catch (e: any) {
+    console.error('Error saving lesson:', e)
+    toast.add({
+      severity: 'error',
+      summary: 'Error',
+      detail: e.message || 'Error al guardar la lección',
+      life: 3000
+    })
+  } finally {
+    savingLesson.value = false
+  }
 }
 
 function submitForReview(course: Course) {
@@ -255,6 +445,7 @@ function submitForReview(course: Course) {
       })
       emit('courseActioned')
       loadCourses()
+      showContentDialog.value = false
     })
     .catch(e => {
       toast.add({
@@ -278,6 +469,7 @@ function deleteCourse(course: Course) {
         life: 3000
       })
       loadCourses()
+      showContentDialog.value = false
     })
     .catch(e => {
       toast.add({
@@ -296,7 +488,9 @@ function getModuleLessonCount(moduleId: string) {
 
 function getModuleLessons(moduleId: string) {
   if (!courseContent.value) return []
-  return courseContent.value.lessons.filter(l => l.module_id === moduleId)
+  return courseContent.value.lessons
+    .filter(l => l.module_id === moduleId)
+    .sort((a, b) => a.lesson_order - b.lesson_order)
 }
 
 function formatDate(dateStr: string) {
@@ -455,5 +649,72 @@ onMounted(() => {
 
 .module-title {
   font-weight: 500;
+}
+
+.lesson-content-preview {
+  border: 1px solid var(--surface-border);
+}
+
+.lesson-content-text :deep(h1),
+.lesson-content-text :deep(h2),
+.lesson-content-text :deep(h3),
+.lesson-content-text :deep(h4) {
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  color: var(--text-color);
+}
+
+.lesson-content-text :deep(p) {
+  margin-bottom: 0.75rem;
+  line-height: 1.6;
+}
+
+.lesson-content-text :deep(code) {
+  background: var(--surface-ground);
+  padding: 0.125rem 0.25rem;
+  border-radius: 4px;
+  font-family: monospace;
+}
+
+.lesson-content-text :deep(pre) {
+  background: var(--surface-ground);
+  padding: 1rem;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 1rem 0;
+}
+
+.lesson-content-text :deep(ul),
+.lesson-content-text :deep(ol) {
+  margin-left: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.lesson-edit-form .field {
+  margin-bottom: 1rem;
+}
+
+.lesson-edit-form label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+}
+
+.preview-box {
+  min-height: 150px;
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--surface-border);
+}
+
+.preview-box :deep(h1),
+.preview-box :deep(h2),
+.preview-box :deep(h3) {
+  margin-top: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.preview-box :deep(p) {
+  margin-bottom: 0.5rem;
 }
 </style>

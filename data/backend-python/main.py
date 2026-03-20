@@ -55,11 +55,16 @@ app = FastAPI(
 )
 
 # Configurar CORS
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "").split(",")
+if not allowed_origins:
+    # Fallback a localhost para desarrollo
+    allowed_origins = ["http://localhost:8080", "http://localhost"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
     allow_headers=["*"],
 )
 
@@ -631,21 +636,69 @@ async def process_file(
     Usa ExplanationService con Ollama Cloud para generar explicaciones.
     """
     try:
+        # ========== VALIDACIONES DE SEGURIDAD ==========
+        # 1. Validar tamaño de archivo
+        MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
+        content = await file.read()
+
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Archivo demasiado grande. Máximo permitido: {MAX_FILE_SIZE // (1024*1024)}MB"
+            )
+
+        if len(content) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="El archivo está vacío"
+            )
+
+        # 2. Validar project_id
+        if not project_id:
+            raise HTTPException(
+                status_code=400,
+                detail="El project_id es obligatorio. Por favor selecciona un proyecto."
+            )
+
+        # 3. Validar extensión del archivo
+        ALLOWED_EXTENSIONS = {'.log', '.txt', '.json', '.csv'}
+        from pathlib import Path
+        file_ext = Path(file.filename).suffix.lower() if file.filename else ''
+
+        if file_ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Tipo de archivo no permitido. Extensiones válidas: {', '.join(ALLOWED_EXTENSIONS)}"
+            )
+
+        # 3. Sanitizar nombre de archivo (prevenir path traversal)
+        safe_filename = Path(file.filename).name if file.filename else 'uploaded_file'
+        # Eliminar cualquier carácter peligroso
+        import re
+        safe_filename = re.sub(r'[<>:"|?*\x00-\x1f]', '_', safe_filename)
+
+        # Verificar que el nombre no contenga path traversal
+        if '..' in safe_filename or safe_filename.startswith('/'):
+            raise HTTPException(
+                status_code=400,
+                detail="Nombre de archivo inválido"
+            )
+
+        logger.info(f"Archivo validado: {safe_filename} ({len(content)} bytes, ext: {file_ext})")
+        # ========== FIN VALIDACIONES ==========
+
         # Verificar si ya hay un archivo procesándose
         if worker_service.current_processing_job:
             raise HTTPException(
                 status_code=409,
                 detail=f"Ya hay un archivo procesándose: {worker_service.current_processing_job}. Solo se puede procesar un archivo a la vez."
             )
-
-        # Leer contenido del archivo
-        content = await file.read()
         try:
             file_content = content.decode('utf-8')
         except UnicodeDecodeError:
             # Intentar con latin-1 si falla utf-8 (CSV a veces tiene caracteres especiales)
             file_content = content.decode('latin-1')
-            logger.warning(f"Archivo {file.filename} no es UTF-8, usando latin-1")
+            logger.warning(f"Archivo {safe_filename} no es UTF-8, usando latin-1")
 
         # Calcular hash SHA-256 del contenido para detectar duplicados
         import hashlib
@@ -671,13 +724,13 @@ async def process_file(
                 )
 
         # Crear chunks y job (pasar file_hash y project_id)
-        file_id = await chunk_service.create_chunks_from_file(file_content, file.filename, file_hash, project_id)
-        logger.info(f"✅ Chunks creados para archivo {file.filename}, file_id: {file_id}")
+        file_id = await chunk_service.create_chunks_from_file(file_content, safe_filename, file_hash, project_id)
+        logger.info(f"✅ Chunks creados para archivo {safe_filename}, file_id: {file_id}")
 
         # Guardar contenido original del archivo para posible re-análisis
         await db_manager.mongodb_client.logsanomaly.raw_files.insert_one({
             "_id": file_id,
-            "filename": file.filename,
+            "filename": safe_filename,
             "content": file_content,
             "size": len(content),
             "upload_date": datetime.utcnow(),

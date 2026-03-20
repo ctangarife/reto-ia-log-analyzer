@@ -292,6 +292,7 @@ import ProgressBar from 'primevue/progressbar'
 import TabView from 'primevue/tabview'
 import TabPanel from 'primevue/tabpanel'
 import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 
 const authStore = useAuthStore()
 const analysisStore = useAnalysisStore()
@@ -488,7 +489,13 @@ async function completeLessonWithScore(lesson: any, score?: number) {
 }
 
 function renderMarkdown(content: string) {
-  return marked(content)
+  const rawHtml = marked(content)
+  return DOMPurify.sanitize(rawHtml, {
+    ALLOWED_TAGS: ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'br', 'ul', 'ol', 'li', 'code', 'pre', 'blockquote', 'a', 'hr'],
+    ALLOWED_ATTR: ['href', 'title', 'class', 'target'],
+    ALLOW_DATA_ATTR: false,
+    ALLOW_UNKNOWN_PROTOCOLS: false
+  })
 }
 
 function getSeverity(score: number) {

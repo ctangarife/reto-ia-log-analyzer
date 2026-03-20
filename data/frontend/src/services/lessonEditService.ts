@@ -2,6 +2,7 @@
  * Lesson Edit Service
  * Handles granular lesson editing with change tracking
  */
+import api from './api'
 
 export interface LessonUpdateRequest {
   title?: string
@@ -52,88 +53,56 @@ export interface LessonDiffResponse {
 }
 
 class LessonEditService {
-  private baseUrl = '/api/lessons'
+  private baseUrl = '/lessons'
 
   /**
    * Get a single lesson
    */
   async getLesson(lessonId: string): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/${lessonId}`, {
-      headers: this.getHeaders()
-    })
-    if (!response.ok) throw new Error('Failed to get lesson')
-    return response.json()
+    const response = await api.get(`${this.baseUrl}/${lessonId}`)
+    return response.data
   }
 
   /**
    * Update a lesson
    */
   async updateLesson(lessonId: string, data: LessonUpdateRequest): Promise<LessonUpdateResponse> {
-    const response = await fetch(`${this.baseUrl}/${lessonId}`, {
-      method: 'PUT',
-      headers: this.getHeaders(),
-      body: JSON.stringify(data)
-    })
-    if (!response.ok) {
-      const error = await response.json()
-      throw new Error(error.detail || 'Failed to update lesson')
-    }
-    return response.json()
+    const response = await api.put(`${this.baseUrl}/${lessonId}`, data)
+    return response.data
   }
 
   /**
    * Update only the exercise data
    */
   async updateExercise(lessonId: string, data: ExerciseUpdateRequest): Promise<ExerciseUpdateResponse> {
-    const response = await fetch(`${this.baseUrl}/${lessonId}/exercise`, {
-      method: 'PUT',
-      headers: this.getHeaders(),
-      body: JSON.stringify(data)
-    })
-    if (!response.ok) throw new Error('Failed to update exercise')
-    return response.json()
+    const response = await api.put(`${this.baseUrl}/${lessonId}/exercise`, data)
+    return response.data
   }
 
   /**
    * Get lesson change history
    */
   async getHistory(lessonId: string, limit = 50): Promise<LessonHistoryResponse> {
-    const response = await fetch(`${this.baseUrl}/${lessonId}/history?limit=${limit}`, {
-      headers: this.getHeaders()
+    const response = await api.get(`${this.baseUrl}/${lessonId}/history`, {
+      params: { limit }
     })
-    if (!response.ok) throw new Error('Failed to get lesson history')
-    return response.json()
+    return response.data
   }
 
   /**
    * Get diff for a specific change
    */
   async getDiff(lessonId: string, changeId: string): Promise<LessonDiffResponse> {
-    const response = await fetch(`${this.baseUrl}/${lessonId}/history/${changeId}/diff`, {
-      headers: this.getHeaders()
-    })
-    if (!response.ok) throw new Error('Failed to get diff')
-    return response.json()
+    const response = await api.get(`${this.baseUrl}/${lessonId}/history/${changeId}/diff`)
+    return response.data
   }
 
   /**
    * Restore lesson to a previous version
    */
   async restoreVersion(lessonId: string, changeId: string): Promise<{ message: string }> {
-    const response = await fetch(`${this.baseUrl}/${lessonId}/restore/${changeId}`, {
-      method: 'POST',
-      headers: this.getHeaders()
-    })
-    if (!response.ok) throw new Error('Failed to restore version')
-    return response.json()
-  }
-
-  private getHeaders(): HeadersInit {
-    const token = localStorage.getItem('auth_token')
-    return {
-      'Content-Type': 'application/json',
-      ...(token && { 'Authorization': `Bearer ${token}` })
-    }
+    const response = await api.post(`${this.baseUrl}/${lessonId}/restore/${changeId}`)
+    return response.data
   }
 }
 

@@ -209,9 +209,14 @@ async def list_users(
                 param_count += 1
                 query += f" AND (username ILIKE ${param_count} OR email ILIKE ${param_count})"
                 params.append(f"%{search}%")
-            
-            query += " ORDER BY created_at DESC LIMIT $1 OFFSET $2"
-            params.insert(0, limit)
+
+            # Agregar LIMIT y OFFSET con parámetros correctamente numerados
+            param_count += 1
+            query += f" LIMIT ${param_count}"
+            params.append(limit)
+
+            param_count += 1
+            query += f" OFFSET ${param_count}"
             params.append(skip)
             
             users = await conn.fetch(query, *params)

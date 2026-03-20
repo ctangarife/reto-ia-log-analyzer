@@ -687,7 +687,9 @@ A continuación analizarás 5 anomalías que no hemos visto en los módulos ante
 
             file_ids = [str(job["id"]) for job in job_ids]
 
-            pipeline = [
+            # Pipeline para obtener estadísticas SIN guardar documentos completos
+            # Esto evita el límite de 16MB de BSON
+            pipeline_stats = [
                 {
                     "$addFields": {
                         "chunk_object_id": {"$toObjectId": "$chunk_id"}
@@ -718,44 +720,88 @@ A continuación analizarás 5 anomalías que no hemos visto en los módulos ante
                         },
                         "low_severity": {
                             "$sum": {"$cond": [{"$gt": ["$anomalies.score", 0]}, 1, 0]}
-                        },
-                        "anomalies": {"$push": "$$ROOT"}
+                        }
                     }
                 }
             ]
 
-            async for result in db_manager.mongodb_db["results"].aggregate(pipeline):
-                total = result.get("total", 0)
-                categories = self._categorize_anomalies(result.get("anomalies", []))
-
-                top_anomalies = sorted(
-                    result.get("anomalies", []),
-                    key=lambda x: x.get("anomalies", {}).get("score", 0)
-                )[:5]
-                top_anomalies_formatted = [
-                    {
-                        "id": str(a.get("_id", "")),
-                        "chunk_id": a.get("chunk_id", ""),
-                        "type": self._infer_anomaly_type(a.get("anomalies", {})),
-                        "score": a.get("anomalies", {}).get("score", 0),
-                        "log_entry": a.get("anomalies", {}).get("log_entry", ""),
-                        "explanation": a.get("anomalies", {}).get("explanation", "")
+            # Pipeline para obtener solo datos ESPECÍFICOS de las top anomalías
+            # NO usamos $$ROOT, solo los campos necesarios
+            pipeline_samples = [
+                {
+                    "$addFields": {
+                        "chunk_object_id": {"$toObjectId": "$chunk_id"}
                     }
-                    for a in top_anomalies
-                ]
-
-                return {
-                    "total": total,
-                    "categories": categories,
-                    "severity": {
-                        "high": result.get("high_severity", 0),
-                        "medium": result.get("medium_severity", 0),
-                        "low": result.get("low_severity", 0)
-                    },
-                    "top_anomalies": top_anomalies_formatted
+                },
+                {
+                    "$lookup": {
+                        "from": "chunks",
+                        "localField": "chunk_object_id",
+                        "foreignField": "_id",
+                        "as": "chunk"
+                    }
+                },
+                {"$unwind": "$chunk"},
+                {"$match": {"chunk.file_id": {"$in": file_ids}}},
+                {"$match": {"anomalies": {"$exists": True, "$ne": None}}},
+                {"$unwind": "$anomalies"},
+                {"$match": {"anomalies.is_anomaly": True}},
+                {"$sort": {"anomalies.score": 1}},
+                {"$limit": 50},  # Solo 50, solo necesitamos top 5 para mostrar
+                {
+                    "$project": {
+                        "_id": 1,
+                        "chunk_id": 1,
+                        "anomalies.score": 1,
+                        "anomalies.log_entry": 1,
+                        "anomalies.explanation": 1,
+                        "anomalies.features": 1
+                    }
                 }
+            ]
 
-            return {"total": 0, "categories": {}, "severity": {}, "top_anomalies": []}
+            # Ejecutar pipelines
+            stats_result = None
+            anomalies_list = []
+
+            async for result in db_manager.mongodb_db["results"].aggregate(pipeline_stats):
+                stats_result = result
+                break
+
+            # Obtener samples uno por uno para agruparlos en Python
+            async for doc in db_manager.mongodb_db["results"].aggregate(pipeline_samples):
+                anomalies_list.append(doc)
+
+            if not stats_result:
+                return {"total": 0, "categories": {}, "severity": {}, "top_anomalies": []}
+
+            total = stats_result.get("total", 0)
+            categories = self._categorize_anomalies(anomalies_list)
+
+            # Top 5 anomalías
+            top_anomalies = anomalies_list[:5]
+            top_anomalies_formatted = [
+                {
+                    "id": str(a.get("_id", "")),
+                    "chunk_id": a.get("chunk_id", ""),
+                    "type": self._infer_anomaly_type(a.get("anomalies", {})),
+                    "score": a.get("anomalies", {}).get("score", 0),
+                    "log_entry": a.get("anomalies", {}).get("log_entry", ""),
+                    "explanation": a.get("anomalies", {}).get("explanation", "")
+                }
+                for a in top_anomalies
+            ]
+
+            return {
+                "total": total,
+                "categories": categories,
+                "severity": {
+                    "high": stats_result.get("high_severity", 0),
+                    "medium": stats_result.get("medium_severity", 0),
+                    "low": stats_result.get("low_severity", 0)
+                },
+                "top_anomalies": top_anomalies_formatted
+            }
 
         except Exception as e:
             logger.error(f"Error getting anomalies analysis: {e}")
@@ -816,23 +862,46 @@ A continuación analizarás 5 anomalías que no hemos visto en los módulos ante
         count: int = 5,
         offset: int = 0
     ) -> List[dict]:
-        """Get sample anomalies from project from MongoDB"""
+        """
+        Get sample anomalies from project from MongoDB
+        Uses chunk lookup to find anomalies by project_id
+        """
         try:
             async with db_manager.postgres_pool.acquire() as conn:
                 job_ids = await conn.fetch(
-                    "SELECT id FROM processing.processing_jobs WHERE project_id = $1 AND status = 'completed'",
+                    """SELECT id FROM processing.processing_jobs
+                       WHERE project_id = $1 AND status = 'completed'""",
                     project_id
                 )
 
                 if not job_ids:
+                    logger.warning(f"No completed jobs found for project {project_id}")
                     return []
 
-                job_id_strs = [str(job["id"]) for job in job_ids]
+                file_ids = [str(job["id"]) for job in job_ids]
+                logger.info(f"Found {len(file_ids)} job_ids for project {project_id}: {file_ids[:3]}...")
 
+            # Pipeline: usar lookup con chunks para filtrar por file_id
             pipeline = [
-                {"$match": {"job_id": {"$in": job_id_strs}, "anomalies": {"$exists": True}}},
+                {
+                    "$addFields": {
+                        "chunk_object_id": {"$toObjectId": "$chunk_id"}
+                    }
+                },
+                {
+                    "$lookup": {
+                        "from": "chunks",
+                        "localField": "chunk_object_id",
+                        "foreignField": "_id",
+                        "as": "chunk"
+                    }
+                },
+                {"$unwind": "$chunk"},
+                {"$match": {"chunk.file_id": {"$in": file_ids}}},
+                {"$match": {"anomalies": {"$exists": True, "$ne": None}}},
                 {"$unwind": "$anomalies"},
-                {"$sort": {"anomalies.score": -1}},
+                {"$match": {"anomalies.is_anomaly": True}},
+                {"$sort": {"anomalies.score": 1}},  # Sort by score ascending (most anomalous first)
                 {"$skip": offset},
                 {"$limit": count}
             ]
@@ -840,20 +909,33 @@ A continuación analizarás 5 anomalías que no hemos visto en los módulos ante
             samples = []
             async for doc in db_manager.mongodb_db["results"].aggregate(pipeline):
                 anomaly = doc.get("anomalies", {})
-                samples.append({
+
+                # Extraer datos de la anomalía
+                log_entry = anomaly.get("log_entry", "")
+                explanation = anomaly.get("explanation", "")
+                score = anomaly.get("score", 0)
+
+                # Crear contenido enriquecido
+                sample = {
                     "id": str(doc.get("_id", "")),
                     "chunk_id": doc.get("chunk_id", ""),
-                    "job_id": doc.get("job_id", ""),
                     "type": self._infer_anomaly_type(anomaly),
-                    "score": anomaly.get("score", 0),
-                    "log_entry": anomaly.get("log_entry", ""),
-                    "explanation": anomaly.get("explanation", "")
-                })
+                    "score": score,
+                    "log_entry": log_entry,
+                    "explanation": explanation,
+                    # Datos adicionales para análisis
+                    "features": anomaly.get("features", {}),
+                    "is_anomaly": anomaly.get("is_anomaly", True)
+                }
+                samples.append(sample)
 
+            logger.info(f"Found {len(samples)} sample anomalies for project {project_id} (requested {count}, offset {offset})")
             return samples
 
         except Exception as e:
             logger.error(f"Error getting sample anomalies: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
 
     async def _get_log_formats(self, conn, project_id: UUID) -> List[str]:

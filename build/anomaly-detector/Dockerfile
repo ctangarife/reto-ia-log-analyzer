@@ -34,6 +34,16 @@ RUN pip install --upgrade pip && \
 # Crear directorio para reportes
 RUN mkdir -p /app/reports /app/chunks
 
+# Crear usuario non-root
+RUN addgroup -g 1000 appuser && \
+    adduser -D -u 1000 -G appuser appuser
+
+# Dar permisos al directorio de trabajo
+RUN chown -R appuser:appuser /app
+
+# Cambiar al usuario non-root
+USER appuser
+
 # Nota: El código se monta como volumen desde data/backend-python/
 # para desarrollo con hot-reload
 
