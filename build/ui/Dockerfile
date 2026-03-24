@@ -12,15 +12,12 @@ WORKDIR /app
 # Instalar dependencias adicionales si son necesarias
 # RUN apk add --no-cache ...
 
-# Crear usuario non-root
-RUN addgroup -g 1000 appuser && \
-    adduser -D -u 1000 -G appuser appuser
-
+# Usar el usuario 'node' que ya existe en la imagen base (UID 1000)
 # Dar permisos al directorio de trabajo
-RUN chown -R appuser:appuser /app
+RUN chown -R node:node /app
 
-# Cambiar al usuario non-root
-USER appuser
+# Cambiar al usuario node (ya existe en la imagen)
+USER node
 
 # Exponer puerto
 EXPOSE 3000

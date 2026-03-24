@@ -22,7 +22,8 @@
             class="compact-selector"
           />
           <Dropdown
-            v-model="authStore.selectedProjectId"
+            :modelValue="authStore.selectedProjectId"
+            @update:modelValue="onProjectSelect"
             :options="availableProjects"
             optionLabel="name"
             optionValue="project_id"
@@ -91,6 +92,7 @@ import { computed } from 'vue'
 import { useRouter, useRoute, RouterLink } from 'vue-router'
 import { useAuthStore } from '../stores/authStore'
 import { useAnalysisStore } from '../stores/analysisStore'
+import { useCourseStore } from '../stores/courseStore'
 import Dropdown from 'primevue/dropdown'
 import Button from 'primevue/button'
 
@@ -98,6 +100,7 @@ const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()
 const store = useAnalysisStore()
+const courseStore = useCourseStore()
 
 const availableProjects = computed(() => {
   if (!authStore.selectedWorkspaceId) return []
@@ -111,12 +114,23 @@ async function onWorkspaceChange() {
     if (projects.length > 0) {
       authStore.selectProject(projects[0].project_id)
     }
+    // Limpiar datos al cambiar de workspace
+    courseStore.clearAll()
+    store.clearHistory()
   }
 }
 
-function onProjectChange() {
+function onProjectSelect(projectId: string) {
+  authStore.selectProject(projectId)
+  onProjectChange()
+}
+
+async function onProjectChange() {
   if (authStore.selectedProjectId) {
-    store.loadReportsFromDirectory(authStore.selectedProjectId)
+    // Limpiar datos antiguos antes de cargar nuevos
+    courseStore.clearAll()
+    store.clearHistory()
+    await store.loadReportsFromDirectory(authStore.selectedProjectId)
   }
 }
 

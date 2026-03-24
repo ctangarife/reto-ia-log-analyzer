@@ -161,6 +161,7 @@ import { useToast } from 'primevue/usetoast'
 
 interface Props {
   workspaceId?: string
+  projectId?: string
 }
 
 interface Course {
@@ -200,7 +201,7 @@ async function loadCourses() {
 
   loading.value = true
   try {
-    const response = await courseGenerationService.getPendingCourses(props.workspaceId)
+    const response = await courseGenerationService.getPendingCourses(props.workspaceId, props.projectId)
     courses.value = response.courses
   } catch (e: any) {
     console.error('Error loading pending courses:', e)
@@ -313,17 +314,12 @@ function formatDate(dateStr: string) {
   })
 }
 
-watch(() => props.workspaceId, () => {
+// Solo cargar cuando ambos estén disponibles
+watch(() => [props.workspaceId, props.projectId], () => {
   if (props.workspaceId) {
     loadCourses()
   }
 }, { immediate: true })
-
-onMounted(() => {
-  if (props.workspaceId) {
-    loadCourses()
-  }
-})
 
 // Expose loadCourses for parent component to call
 defineExpose({

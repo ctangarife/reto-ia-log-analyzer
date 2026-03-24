@@ -15,6 +15,8 @@ Course Structure:
 """
 import logging
 import json
+import random
+import re
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID, uuid4
@@ -25,6 +27,7 @@ from models.learning_models import (
     CourseGenerateResponse, CoursePreviewResponse,
     CourseRegenerateResponse, CourseLimitsCheck
 )
+from .llm import OllamaClientWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -574,7 +577,7 @@ Cuando se generen anomalías, podrás:
     ) -> int:
         """
         Create Module 4: Evaluación Final
-        Practical exam with new anomalies not seen in Module 3
+        Uses LLM to generate unique questions for each anomaly
         """
         module_id = await conn.fetchval("""
             INSERT INTO learning.course_modules
@@ -587,38 +590,135 @@ Cuando se generen anomalías, podrás:
         # Get evaluation anomalies (different from module 3)
         eval_anomalies = await self._get_sample_anomalies(project_id, count=5, offset=8)
 
-        content = """# Evaluación Final
+        # Initialize LLM client
+        try:
+            llm_client = OllamaClientWrapper()
+        except Exception as e:
+            logger.warning(f"Could not initialize LLM for exam generation: {e}")
+            llm_client = None
 
-¡Has llegado al final del curso! Ahora es momento de poner en práctica todo lo aprendido.
+        questions_by_anomaly = []
 
-## Instrucciones
+        # Generate unique questions for each anomaly using LLM
+        for idx, anomaly in enumerate(eval_anomalies, 1):
+            anomaly_type = self._infer_anomaly_type(anomaly)
+            anomaly_score = anomaly.get("anomaly_score", 0.5)
+            chunk_id = anomaly.get("chunk_id", "unknown")
+            log_entry = anomaly.get("log_entry", anomaly.get("log_line", ""))
+            explanation = anomaly.get("anomalies", {}).get("explanation", "")
 
-A continuación analizarás 5 anomalías que no hemos visto en los módulos anteriores. Para cada una debes:
+            # Determine severity level
+            if anomaly_score > 0.7:
+                severity = "CRÍTICA"
+            elif anomaly_score > 0.5:
+                severity = "ALTA"
+            else:
+                severity = "MEDIA"
 
-1. **Identificar el tipo de anomalía**: ¿Es de seguridad, rendimiento, red, etc.?
-2. **Evaluar la severidad**: ¿Qué tan crítico es este evento?
-3. **Proponer una acción**: ¿Qué harías ante esta situación?
+            # Generate questions using LLM
+            if llm_client:
+                try:
+                    exam_prompt = f"""Eres un experto en análisis de logs y detección de anomalías.
 
-## Criterios de Evaluación
+Genera 2 preguntas de opción múltiple para la siguiente anomalía.
 
-- Necesitas al menos **70% de respuestas correctas** para aprobar
-- Cada anomalía vale 20 puntos
-- Tienes intentos ilimitados pero se registrará tu mejor puntuación
+**Anomalía {idx}:**
+- Tipo: {anomaly_type}
+- Severidad: {severity}
+- Score: {anomaly_score:.2f}
+- Log: {log_entry[:500]}
+- Explicación: {explanation[:500]}
 
-## Proceso
+Requisitos:
+1. Cada pregunta debe tener 4 opciones (A, B, C, D)
+2. Solo UNA opción es correcta
+3. Las opciones incorrectas deben ser plausibles pero claramente erróneas
+4. Una pregunta sobre diagnóstico/identificación
+5. Una pregunta sobre acción/recomendación
+6. Específicas a ESTA anomalía, no genéricas
 
-1. Revisa cada anomalía presentada
-2. Lee cuidadosamente el log original y la explicación
-3. Responde las preguntas planteadas
-4. Al finalizar recibirás tu calificación y feedback
+Responde SOLO en formato JSON:
+{{
+    "questions": [
+        {{
+            "question": "texto de la pregunta 1",
+            "options": [
+                {{"letter": "A", "text": "opción A", "correct": true}},
+                {{"letter": "B", "text": "opción B", "correct": false}},
+                {{"letter": "C", "text": "opción C", "correct": false}},
+                {{"letter": "D", "text": "opción D", "correct": false}}
+            ]
+        }},
+        {{
+            "question": "texto de la pregunta 2",
+            "options": [
+                {{"letter": "A", "text": "opción A", "correct": false}},
+                {{"letter": "B", "text": "opción B", "correct": true}},
+                {{"letter": "C", "text": "opción C", "correct": false}},
+                {{"letter": "D", "text": "opción D", "correct": false}}
+            ]
+        }}
+    ]
+}}"""
 
-¡Mucho éxito!
-"""
+                    response = await llm_client.generate_response(
+                        prompt=exam_prompt,
+                        system_prompt="Eres un experto instructor en análisis de logs. Genera preguntas de opción múltiple con exactamente una respuesta correcta.",
+                        temperature=0.8
+                    )
+
+                    # Parse JSON response
+                    json_match = re.search(r'\{[\s\S]*\}', response)
+                    if json_match:
+                        questions_data = json.loads(json_match.group())
+                        questions = questions_data.get("questions", [])
+                    else:
+                        # Fallback if JSON parsing fails
+                        questions = self._generate_fallback_questions(anomaly_type, log_entry)
+                except Exception as e:
+                    logger.warning(f"LLM question generation failed for anomaly {idx}: {e}")
+                    # Fallback questions
+                    questions = self._generate_fallback_questions(anomaly_type, log_entry)
+            else:
+                # Fallback when LLM is not available
+                questions = self._generate_fallback_questions(anomaly_type, log_entry)
+
+            questions_by_anomaly.append({
+                "index": idx,
+                "chunk_id": chunk_id,
+                "type": anomaly_type,
+                "severity": severity,
+                "score": anomaly_score,
+                "questions": questions,
+                "log_entry": log_entry[:200],
+                "explanation": explanation[:300]
+            })
+
+        # Build exam content - ONLY instructions, no questions (shown by frontend)
+        content_parts = ["# Evaluación Final\n\n"]
+        content_parts.append("¡Has llegado al final del curso! A continuación analizarás **5 anomalías reales** de tu proyecto. ")
+        content_parts.append("Cada una tiene **preguntas de opción múltiple** generadas específicamente por IA.\n\n")
+        content_parts.append("## Criterios de Evaluación\n\n")
+        content_parts.append("- Necesitas al menos **70% de respuestas correctas** para aprobar\n")
+        content_parts.append("- Cada anomalía tiene 2 preguntas (5 puntos cada una = 10 puntos por anomalía)\n")
+        content_parts.append("- Selecciona la opción correcta (A, B, C o D) para cada pregunta\n")
+        content_parts.append("- Las preguntas fueron generadas por IA basándose en el contenido específico de cada anomalía\n\n")
+        content_parts.append("## Instrucciones\n\n")
+        content_parts.append("1. Lee cuidadosamente cada log presentado\n")
+        content_parts.append("2. Analiza las opciones disponibles antes de responder\n")
+        content_parts.append("3. Una vez enviadas las respuestas, verás tu calificación y el feedback\n\n")
+        content_parts.append("---\n\n")
+        content_parts.append("*Las preguntas específicas se muestran a continuación en formato interactivo.*\n\n")
+
+        content = "".join(content_parts)
 
         exercise_data = {
             "type": "final_exam",
             "passing_score": 70,
-            "anomalies": [{"id": a.get("id")} for a in eval_anomalies]
+            "anomalies": [{"id": a.get("id")} for a in eval_anomalies],
+            "questions_by_anomaly": questions_by_anomaly,
+            "generated_at": datetime.now().isoformat(),
+            "llm_generated": llm_client is not None
         }
 
         await conn.execute("""
@@ -628,6 +728,31 @@ A continuación analizarás 5 anomalías que no hemos visto en los módulos ante
         """, module_id, 1, "Examen Práctico", content, json.dumps(exercise_data))
 
         return 1
+
+    def _generate_fallback_questions(self, anomaly_type: str, log_entry: str) -> list:
+        """Generate fallback multiple choice questions when LLM fails"""
+        log_preview = log_entry[:100] if log_entry else "log no disponible"
+
+        return [
+            {
+                "question": f"¿Qué tipo de anomalía representa el siguiente log: '{log_preview}'?",
+                "options": [
+                    {"letter": "A", "text": f"Anomalía de {anomaly_type}", "correct": True},
+                    {"letter": "B", "text": "Anomalía de Seguridad", "correct": False},
+                    {"letter": "C", "text": "Anomalía de Red", "correct": False},
+                    {"letter": "D", "text": "Anomalía de Performance", "correct": False}
+                ]
+            },
+            {
+                "question": f"¿Cuál sería la acción recomendada para este tipo de anomalía de {anomaly_type}?",
+                "options": [
+                    {"letter": "A", "text": "Ignorar el evento, es normal", "correct": False},
+                    {"letter": "B", "text": "Revisar logs relacionados y monitorear", "correct": True},
+                    {"letter": "C", "text": "Reiniciar el servidor inmediatamente", "correct": False},
+                    {"letter": "D", "text": "Eliminar el archivo de log", "correct": False}
+                ]
+            }
+        ]
 
     # ==================== PRIVATE HELPER METHODS ====================
 
@@ -943,12 +1068,54 @@ A continuación analizarás 5 anomalías que no hemos visto en los módulos ante
             return []
 
     async def _get_log_formats(self, conn, project_id: UUID) -> List[str]:
-        """Get detected log formats"""
+        """Detect log structure characteristics (not server-specific formats)"""
         try:
-            return ["Bro/Zeek"]  # Default format
+            sample_logs = await self._get_sample_log_entries(conn, project_id, limit=10)
+            return self._detect_log_characteristics(sample_logs)
+
         except Exception as e:
-            logger.error(f"Error getting log formats: {e}")
-            return ["Unknown"]
+            logger.error(f"Error detecting log characteristics: {e}")
+            return ["No estructurado"]
+
+    def _detect_log_characteristics(self, log_entries: List[str]) -> List[str]:
+        """Detect generic log structure characteristics"""
+        if not log_entries:
+            return ["No estructurado"]
+
+        detected = set()
+
+        for log_entry in log_entries:
+            entry = log_entry.strip()
+
+            # JSON structured logs
+            if entry.startswith('{') and ('"' in entry or '"' in entry):
+                detected.add("Estructurado (JSON)")
+
+            # Pipe-delimited (like Bro/Zeek)
+            elif entry.count('|') >= 5:
+                detected.add("Campos separados por pipe")
+
+            # Comma-delimited (CSV-like)
+            elif entry.count(',') >= 5 and not any(c in entry for c in '{}[]'):
+                detected.add("Campos separados por coma")
+
+            # Timestamp-prefixed (common in server logs)
+            elif entry[0].isdigit() and ':' in entry[:30]:
+                detected.add("Con timestamp al inicio")
+
+            # Brackets with timestamp (Apache/Nginx style)
+            elif '[' in entry[:50] and ']' in entry[:100]:
+                detected.add("Entre corchetes [timestamp]")
+
+            # Key-value pairs
+            elif '=' in entry and ' ' in entry:
+                detected.add("Pares clave-valor")
+
+            # Default: plain text
+            else:
+                detected.add("Texto plano")
+
+        return list(detected) if detected else ["No estructurado"]
 
     def _infer_anomaly_type(self, anomaly: dict) -> str:
         """Infer anomaly category from explanation and log entry"""

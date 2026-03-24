@@ -107,7 +107,8 @@
 
                     <!-- Contenido de la lección (cuando está seleccionada) -->
                     <div v-if="selectedLesson?.id === lesson.id" class="lesson-content">
-                      <div class="lesson-text" v-html="renderMarkdown(lesson.content)"></div>
+                      <!-- Mostrar contenido markdown EXCEPTO para exámenes de nuevo formato -->
+                      <div v-if="!isNewExamFormat(lesson)" class="lesson-text" v-html="renderMarkdown(lesson.content)"></div>
 
                       <!-- Ejercicio si existe -->
                       <div v-if="lesson.exercise_data" class="exercise-section">
@@ -189,8 +190,83 @@
                           </button>
                         </div>
 
-                        <!-- Examen final -->
-                        <div v-if="lesson.exercise_data?.type === 'final_exam'" class="final-exam">
+                        <!-- Examen final - Nuevo formato con opciones múltiples -->
+                        <div v-if="lesson.exercise_data?.type === 'final_exam' && isNewExamFormat(lesson)" class="final-exam">
+                          <p class="exam-intro">
+                            <strong>Examen Final - Opción Múltiple</strong><br>
+                            Responde cada pregunta seleccionando la opción correcta.
+                            Necesitas al menos {{ lesson.exercise_data.passing_score || 70 }}% para aprobar.
+                            Cada pregunta vale 5 puntos (10 preguntas × 5 pts = 50 pts total).
+                          </p>
+
+                          <div v-if="examQuestions.length > 0" class="exam-questions-new">
+                            <div
+                              v-for="(question, qIdx) in examQuestions"
+                              :key="qIdx"
+                              class="exam-question-new"
+                            >
+                              <div class="question-header">
+                                <h5>Anomalía {{ question.anomalyIndex }} - Pregunta {{ question.questionIndex }}</h5>
+                                <span class="question-type">{{ question.anomalyType }}</span>
+                              </div>
+
+                              <pre class="exam-log">{{ question.logEntry }}</pre>
+
+                              <p class="question-text">{{ question.question }}</p>
+
+                              <!-- Opciones de respuesta -->
+                              <div v-if="!examResults" class="options-grid">
+                                <button
+                                  v-for="option in question.options"
+                                  :key="option.letter"
+                                  class="option-button"
+                                  :class="{ selected: examAnswers[qIdx]?.selected === option.letter }"
+                                  @click="selectExamOption(qIdx, option.letter)"
+                                  :disabled="!!examResults"
+                                >
+                                  <span class="option-letter">{{ option.letter }}</span>
+                                  <span class="option-text">{{ option.text }}</span>
+                                </button>
+                              </div>
+
+                              <!-- Resultado por pregunta -->
+                              <div v-if="examResults?.questionResults?.[qIdx]" class="question-result">
+                                <Tag :value="examResults.questionResults[qIdx].correct ? 'Correcto ✓' : 'Incorrecto ✗'"
+                                     :severity="examResults.questionResults[qIdx].correct ? 'success' : 'danger'" />
+                                <span v-if="!examResults.questionResults[qIdx].correct" class="correct-answer">
+                                  Correcta: {{ examResults.questionResults[qIdx].correctAnswer }}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <!-- Botón enviar -->
+                          <div v-if="!examResults" class="exam-actions">
+                            <button class="btn-submit" @click="submitExam(lesson)" :disabled="!allExamAnswers || examSubmitting">
+                              {{ examSubmitting ? 'Enviando...' : 'Enviar Examen' }}
+                            </button>
+                          </div>
+
+                          <!-- Resultados generales -->
+                          <div v-if="examResults" class="exam-results">
+                            <div :class="['result-banner', examResults.passed ? 'success' : 'error']">
+                              <i :class="examResults.passed ? 'pi-check-circle' : 'pi-times-circle'"></i>
+                              <div>
+                                <strong>{{ examResults.passed ? '¡Aprobado!' : 'No Aprobado' }}</strong>
+                                <p>{{ examResults.feedback }}</p>
+                              </div>
+                            </div>
+                            <div class="score-display">
+                              <div class="score-circle" :class="{ passed: examResults.passed }">
+                                <span class="score-number">{{ examResults.score }}%</span>
+                                <span class="score-label">de {{ examResults.passingScore }}% requerido</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <!-- Examen final - Formato viejo (tipo + severidad) -->
+                        <div v-else-if="lesson.exercise_data?.type === 'final_exam'" class="final-exam">
                           <p class="exam-intro">
                             <strong>Examen Final</strong><br>
                             Analiza cada anomalía e identifica su <strong>tipo</strong> y <strong>severidad</strong>.
@@ -307,6 +383,7 @@
           <DraftCoursesPanel
             ref="draftPanelRef"
             :workspaceId="authStore.selectedWorkspaceId"
+            :projectId="authStore.selectedProjectId"
             @course-selected="onCourseSelected"
             @course-actioned="onCourseActioned"
             @course-generated="onCourseGenerated"
@@ -318,6 +395,7 @@
           <PendingCoursesPanel
             ref="pendingPanelRef"
             :workspaceId="authStore.selectedWorkspaceId"
+            :projectId="authStore.selectedProjectId"
             @course-selected="onCourseSelected"
             @course-actioned="onCourseActioned"
           />
@@ -328,8 +406,19 @@
           <ApprovedCoursesPanel
             ref="approvedPanelRef"
             :workspaceId="authStore.selectedWorkspaceId"
+            :projectId="authStore.selectedProjectId"
             @course-selected="onCourseSelected"
             @course-actioned="onCourseActioned"
+          />
+        </TabPanel>
+
+        <!-- Archived Courses Tab -->
+        <TabPanel header="📦 Archivados" v-if="canManageCourses">
+          <ArchivedCoursesPanel
+            ref="archivedPanelRef"
+            :workspaceId="authStore.selectedWorkspaceId"
+            :projectId="authStore.selectedProjectId"
+            @course-republished="onCourseActioned"
           />
         </TabPanel>
       </TabView>
@@ -348,6 +437,7 @@ import CourseManagementWidget from '../components/CourseManagementWidget.vue'
 import DraftCoursesPanel from '../components/DraftCoursesPanel.vue'
 import PendingCoursesPanel from '../components/PendingCoursesPanel.vue'
 import ApprovedCoursesPanel from '../components/ApprovedCoursesPanel.vue'
+import ArchivedCoursesPanel from '../components/ArchivedCoursesPanel.vue'
 import Tag from 'primevue/tag'
 import ProgressBar from 'primevue/progressbar'
 import TabView from 'primevue/tabview'
@@ -371,6 +461,27 @@ const finalExamAnomalies = ref<any[]>([])
 const finalExamAnswers = ref<Record<number, FinalExamAnswer>>({})
 const finalExamResults = ref<FinalExamValidationResponse | null>(null)
 const finalExamSubmitting = ref(false)
+
+// New exam format (multiple choice)
+interface ExamQuestion {
+  anomalyIndex: number
+  questionIndex: number
+  anomalyType: string
+  logEntry: string
+  question: string
+  options: Array<{ letter: string; text: string; correct: boolean }>
+  correctAnswer: string
+}
+
+interface ExamAnswer {
+  selected: string
+}
+
+const examQuestions = ref<ExamQuestion[]>([])
+const examAnswers = ref<Record<number, ExamAnswer>>({})
+const examResults = ref<any>(null)
+const examSubmitting = ref(false)
+
 const workspaceUsers = ref<Array<any>>([])
 const activeTab = ref(0) // Default to Published tab
 
@@ -378,6 +489,7 @@ const activeTab = ref(0) // Default to Published tab
 const draftPanelRef = ref<any>(null)
 const pendingPanelRef = ref<any>(null)
 const approvedPanelRef = ref<any>(null)
+const archivedPanelRef = ref<any>(null)
 
 const circumference = 2 * Math.PI * 16
 
@@ -390,6 +502,12 @@ const hasAnswers = computed(() => Object.keys(answers.value).length > 0)
 const allFinalAnswers = computed(() => {
   return finalExamAnomalies.value.length > 0 &&
     finalExamAnomalies.value.every((_, idx) => finalExamAnswers.value[idx]?.anomaly_type && finalExamAnswers.value[idx]?.severity)
+})
+
+// New exam format computed
+const allExamAnswers = computed(() => {
+  return examQuestions.value.length > 0 &&
+    examQuestions.value.every((_, idx) => examAnswers.value[idx]?.selected)
 })
 
 const canManageCourses = computed(() => {
@@ -435,6 +553,8 @@ function selectLesson(lesson: any) {
   answers.value = {}
   finalExamAnswers.value = {}
   finalExamResults.value = null
+  examAnswers.value = {}
+  examResults.value = null
 
   console.log('selectLesson:', lesson.title, 'exercise_data:', lesson.exercise_data)
 
@@ -443,7 +563,14 @@ function selectLesson(lesson: any) {
     loadProjectExercises(lesson.id)
   } else if (lesson.exercise_data?.type === 'final_exam') {
     console.log('Loading final exam for lesson:', lesson.id)
-    loadFinalExam(lesson.id)
+    // Check if new format (multiple choice)
+    if (isNewExamFormat(lesson)) {
+      console.log('New exam format detected - loading questions')
+      loadExamQuestions(lesson)
+    } else {
+      console.log('Old exam format - loading from backend')
+      loadFinalExam(lesson.id)
+    }
   }
 }
 
@@ -587,6 +714,105 @@ async function submitFinalExam(lesson: any) {
 function resetFinalExam() {
   finalExamAnswers.value = {}
   finalExamResults.value = null
+}
+
+// ==================== NEW EXAM FORMAT FUNCTIONS ====================
+
+// Check if lesson has new exam format (multiple choice)
+function isNewExamFormat(lesson: any): boolean {
+  return lesson.exercise_data?.questions_by_anomaly &&
+    Array.isArray(lesson.exercise_data.questions_by_anomaly) &&
+    lesson.exercise_data.questions_by_anomaly.length > 0 &&
+    lesson.exercise_data.questions_by_anomaly[0]?.questions?.[0]?.options
+}
+
+// Load questions for new exam format
+function loadExamQuestions(lesson: any) {
+  examQuestions.value = []
+  examAnswers.value = {}
+  examResults.value = null
+
+  const questionsByAnomaly = lesson.exercise_data?.questions_by_anomaly || []
+
+  questionsByAnomaly.forEach((qba: any) => {
+    qba.questions.forEach((q: any, qIdx: number) => {
+      if (q.question && q.options) {
+        const correctOption = q.options.find((o: any) => o.correct)
+        examQuestions.value.push({
+          anomalyIndex: qba.index,
+          questionIndex: qIdx + 1,
+          anomalyType: qba.type,
+          logEntry: qba.log_entry || '',
+          question: q.question,
+          options: q.options,
+          correctAnswer: correctOption?.letter || ''
+        })
+      }
+    })
+  })
+}
+
+// Select an option for new exam format
+function selectExamOption(questionIdx: number, letter: string) {
+  examAnswers.value[questionIdx] = { selected: letter }
+}
+
+// Submit new exam format
+async function submitExam(lesson: any) {
+  if (!authStore.selectedProjectId) return
+
+  examSubmitting.value = true
+
+  try {
+    // Grade locally since we have the correct answers
+    let correctCount = 0
+    const questionResults: any[] = []
+
+    examQuestions.value.forEach((q, idx) => {
+      const selected = examAnswers.value[idx]?.selected
+      const isCorrect = selected === q.correctAnswer
+
+      if (isCorrect) correctCount++
+
+      questionResults.push({
+        question: q.question,
+        selected: selected,
+        correctAnswer: q.correctAnswer,
+        correct: isCorrect
+      })
+    })
+
+    const score = Math.round((correctCount / examQuestions.value.length) * 100)
+    const passingScore = lesson.exercise_data?.passing_score || 70
+    const passed = score >= passingScore
+
+    examResults.value = {
+      score,
+      passingScore,
+      passed,
+      feedback: passed
+        ? '¡Excelente! Has demostrado un buen entendimiento de las anomalías.'
+        : 'Necesitas repasar algunos conceptos. Intenta nuevamente.',
+      questionResults,
+      canRetake: true
+    }
+
+    // Mark lesson complete if passed
+    if (passed) {
+      await completeLessonWithScore(lesson, score)
+    }
+  } catch (error: any) {
+    console.error('Error submitting exam:', error)
+    alert('Error al enviar el examen')
+  } finally {
+    examSubmitting.value = false
+  }
+}
+
+// Reset new exam format
+function resetExam() {
+  examAnswers.value = {}
+  examResults.value = null
 }
 
 function selectAnswer(questionId: string, optionIndex: number) {
@@ -845,6 +1071,10 @@ watch(activeTab, (newTab) => {
   // Tab 3: Approved
   else if (newTab === 3 && approvedPanelRef.value) {
     approvedPanelRef.value.loadCourses?.()
+  }
+  // Tab 4: Archived
+  else if (newTab === 4 && archivedPanelRef.value) {
+    archivedPanelRef.value.loadCourses?.()
   }
 })
 
@@ -1528,5 +1758,118 @@ defineExpose({
 .course-tabs :deep(.p-tabview-panels) {
   background: transparent;
   padding: 1rem 0;
+}
+
+/* New Exam Format Styles */
+.exam-questions-new {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  margin-top: 1rem;
+}
+
+.exam-question-new {
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 1.5rem;
+}
+
+.question-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.question-header h5 {
+  margin: 0;
+  color: #334155;
+}
+
+.question-type {
+  font-size: 0.8rem;
+  padding: 0.25rem 0.75rem;
+  background: #f1f5f9;
+  color: #64748b;
+  border-radius: 12px;
+}
+
+.question-text {
+  font-size: 1rem;
+  color: #475569;
+  margin: 1rem 0;
+  line-height: 1.6;
+}
+
+.options-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+.option-button {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  border: 2px solid #e2e8f0;
+  border-radius: 8px;
+  background: white;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-align: left;
+}
+
+.option-button:hover:not(:disabled) {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.option-button.selected {
+  border-color: #667eea;
+  background: #f0f4ff;
+}
+
+.option-button:disabled {
+  cursor: not-allowed;
+}
+
+.option-letter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: #f1f5f9;
+  color: #64748b;
+  border-radius: 50%;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.option-button.selected .option-letter {
+  background: #667eea;
+  color: white;
+}
+
+.option-text {
+  flex: 1;
+  color: #475569;
+}
+
+.question-result {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  background: #f8fafc;
+  border-radius: 6px;
+}
+
+.correct-answer {
+  color: #64748b;
+  font-size: 0.9rem;
 }
 </style>

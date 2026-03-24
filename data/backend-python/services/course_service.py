@@ -61,6 +61,7 @@ class CourseService:
         try:
             async with db_manager.postgres_pool.acquire() as conn:
                 # Check if there's a published course for this project
+                # Only return courses where project_id matches exactly
                 published_course = await conn.fetchrow("""
                     SELECT c.id, c.name, c.description, c.workspace_id
                     FROM learning.courses c
@@ -68,6 +69,8 @@ class CourseService:
                     ORDER BY c.published_at DESC
                     LIMIT 1
                 """, project_id)
+
+                logger.info(f"[get_course_progress] project_id={project_id}, published_course={published_course['id'] if published_course else None}")
 
                 if not published_course:
                     # No published course yet - return empty progress

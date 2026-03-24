@@ -119,6 +119,10 @@ export const useAuthStore = defineStore('auth', () => {
     selectedProjectId.value = null
     isAuthChecked.value = false
 
+    // Limpiar localStorage
+    localStorage.removeItem('selected_workspace_id')
+    localStorage.removeItem('selected_project_id')
+
     await apiLogout()
   }
 
@@ -255,11 +259,14 @@ export const useAuthStore = defineStore('auth', () => {
   async function selectWorkspace(workspaceId: string): Promise<void> {
     selectedWorkspaceId.value = workspaceId
     selectedProjectId.value = null
+    localStorage.setItem('selected_workspace_id', workspaceId)
+    localStorage.removeItem('selected_project_id')
     await loadProjects(workspaceId)
   }
 
   function selectProject(projectId: string): void {
     selectedProjectId.value = projectId
+    localStorage.setItem('selected_project_id', projectId)
     // Cargar permisos si no están cargados
     if (!projectPermissions.value[projectId]) {
       loadProjectPermissions(projectId)
@@ -322,6 +329,12 @@ export const useAuthStore = defineStore('auth', () => {
     if (storedUser) {
       user.value = storedUser
     }
+
+    // Cargar workspace y proyecto seleccionados desde localStorage
+    const storedWorkspaceId = localStorage.getItem('selected_workspace_id')
+    const storedProjectId = localStorage.getItem('selected_project_id')
+    if (storedWorkspaceId) selectedWorkspaceId.value = storedWorkspaceId
+    if (storedProjectId) selectedProjectId.value = storedProjectId
 
     // Verificar autenticación con el backend
     try {

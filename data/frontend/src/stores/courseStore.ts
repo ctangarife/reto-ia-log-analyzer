@@ -169,6 +169,13 @@ export const useCourseStore = defineStore('course', () => {
     }
   }
 
+  const clearAll = () => {
+    currentCourse.value = null
+    courses.value = []
+    pendingCourses.value = []
+    error.value = ''
+  }
+
   return {
     // State
     currentCourse,
@@ -198,6 +205,7 @@ export const useCourseStore = defineStore('course', () => {
     addCourse,
     updateCourse,
     removeCourse,
-    updateCourseStatus
+    updateCourseStatus,
+    clearAll
   }
 })

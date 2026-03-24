@@ -1,16 +1,16 @@
 <template>
-  <div class="approved-courses-panel">
+  <div class="archived-courses-panel">
     <!-- Loading state -->
     <div v-if="loading" class="loading-state">
       <ProgressSpinner />
-      <p>Cargando cursos aprobados...</p>
+      <p>Cargando cursos archivados...</p>
     </div>
 
     <!-- Empty state -->
     <div v-else-if="courses.length === 0" class="empty-state">
-      <i class="pi pi-check-circle" style="font-size: 3rem; color: #cbd5e1;"></i>
-      <h3>No hay aprobados</h3>
-      <p>No hay cursos aprobados esperando publicación.</p>
+      <i class="pi pi-archive" style="font-size: 3rem; color: #cbd5e1;"></i>
+      <h3>No hay archivados</h3>
+      <p>No hay cursos archivados.</p>
     </div>
 
     <!-- Courses list -->
@@ -18,12 +18,12 @@
       <Card
         v-for="course in courses"
         :key="course.id"
-        class="course-card"
+        class="course-card archived-card"
       >
         <template #title>
           <div class="course-title">
             <h3>{{ course.name }}</h3>
-            <Tag value="Aprobado" severity="success" />
+            <Tag value="Archivado" severity="secondary" />
           </div>
         </template>
         <template #subtitle>
@@ -35,9 +35,9 @@
             <Chip :label="`${course.module_count || 0} módulos`" size="small" class="mr-2" />
             <Chip :label="`${course.lesson_count || 0} lecciones`" size="small" />
           </div>
-          <small class="created-date">
+          <small class="archived-date">
             <i class="pi pi-calendar"></i>
-            Aprobado: {{ formatDate(course.created_at) }}
+            Archivado: {{ formatDate(course.reviewed_at || course.created_at) }}
           </small>
         </template>
         <template #footer>
@@ -51,10 +51,10 @@
               size="small"
             />
             <Button
-              icon="pi pi-upload"
-              label="Publicar"
+              icon="pi pi-refresh"
+              label="Republicar"
               severity="success"
-              @click="publishCourse(course)"
+              @click="republishCourseAction(course)"
               size="small"
             />
           </div>
@@ -63,16 +63,16 @@
     </div>
 
     <!-- Course Content Dialog -->
-    <Dialog v-model:visible="showContentDialog" modal header="Contenido del Curso" :style="{ width: '80vw' }">
+    <Dialog v-model:visible="showContentDialog" modal header="Contenido del Curso (Archivado)" :style="{ width: '80vw' }">
       <div v-if="loadingContent" class="flex justify-content-center p-4">
         <ProgressSpinner />
       </div>
-      <div v-else-if="courseContent" class="course-content">
+      <div v-else-if="courseContent" class="course-content archived-content">
         <div class="course-header mb-3">
           <h3>{{ courseContent.course.name }}</h3>
           <p class="text-color-secondary">{{ courseContent.course.description }}</p>
           <div class="flex gap-2 mt-2">
-            <Tag :value="courseContent.course.status" severity="success" />
+            <Tag value="Archivado" severity="secondary" />
             <Tag :value="courseContent.course.scope" severity="info" />
             <Chip :label="`${courseContent.modules.length} módulos`" size="small" />
             <Chip :label="`${courseContent.lessons.length} lecciones`" size="small" />
@@ -105,6 +105,8 @@
       </div>
     </Dialog>
 
+    <!-- Confirm Republish Dialog -->
+    <ConfirmDialog />
     <Toast />
   </div>
 </template>
@@ -122,11 +124,13 @@ import AccordionTab from 'primevue/accordiontab'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import ProgressSpinner from 'primevue/progressspinner'
+import ConfirmDialog from 'primevue/confirmdialog'
 import { useToast } from 'primevue/usetoast'
+import { useConfirm } from 'primevue/useconfirm'
 
 interface Props {
-  workspaceId?: string
   projectId?: string
+  workspaceId?: string
 }
 
 interface Course {
@@ -145,11 +149,11 @@ interface Course {
 
 const props = defineProps<Props>()
 const emit = defineEmits<{
-  courseSelected: [course: Course]
-  courseActioned: []
+  courseRepublished: []
 }>()
 
 const toast = useToast()
+const confirm = useConfirm()
 const loading = ref(false)
 const courses = ref<Course[]>([])
 const showContentDialog = ref(false)
@@ -158,18 +162,18 @@ const courseContent = ref<CourseContent | null>(null)
 const activeModuleIndex = ref<number[]>([])
 
 async function loadCourses() {
-  if (!props.workspaceId) return
+  if (!props.projectId && !props.workspaceId) return
 
   loading.value = true
   try {
-    const response = await courseGenerationService.getApprovedCourses(props.workspaceId, props.projectId)
+    const response = await courseGenerationService.getArchivedCourses(props.projectId, props.workspaceId)
     courses.value = response.courses
   } catch (e: any) {
-    console.error('Error loading approved courses:', e)
+    console.error('Error loading archived courses:', e)
     toast.add({
       severity: 'error',
       summary: 'Error',
-      detail: 'Error al cargar cursos aprobados',
+      detail: 'Error al cargar cursos archivados',
       life: 3000
     })
   } finally {
@@ -201,23 +205,34 @@ function viewCourse(course: Course) {
     })
 }
 
-function publishCourse(course: Course) {
-  courseGenerationService.publishCourse(course.id, true) // archive existing
+function republishCourseAction(course: Course) {
+  confirm.require({
+    message: `¿Estás seguro de que quieres republicar el curso "${course.name}"? Se archivará cualquier curso publicado actualmente en este proyecto.`,
+    header: 'Confirmar Republicación',
+    icon: 'pi pi-exclamation-triangle',
+    accept: () => {
+      doRepublish(course)
+    }
+  })
+}
+
+function doRepublish(course: Course) {
+  courseGenerationService.republishCourse(course.id)
     .then(() => {
       toast.add({
         severity: 'success',
         summary: 'Éxito',
-        detail: 'Curso publicado exitosamente',
+        detail: 'Curso republicado exitosamente',
         life: 3000
       })
-      emit('courseActioned')
+      emit('courseRepublished')
       loadCourses()
     })
-    .catch(e => {
+    .catch((e: any) => {
       toast.add({
         severity: 'error',
         summary: 'Error',
-        detail: e.message || 'Error al publicar curso',
+        detail: e.response?.data?.detail || e.message || 'Error al republicar curso',
         life: 3000
       })
     })
@@ -242,21 +257,20 @@ function formatDate(dateStr: string) {
   })
 }
 
-// Solo cargar cuando ambos estén disponibles
+// Cargar cuando workspaceId o projectId cambien
 watch(() => [props.workspaceId, props.projectId], () => {
   if (props.workspaceId) {
     loadCourses()
   }
 }, { immediate: true })
 
-// Expose loadCourses for parent component to call
 defineExpose({
   loadCourses
 })
 </script>
 
 <style scoped>
-.approved-courses-panel {
+.archived-courses-panel {
   padding: 1rem;
 }
 
@@ -290,6 +304,11 @@ defineExpose({
 .course-card {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.archived-card {
+  border-left: 4px solid #94a3b8;
+  opacity: 0.9;
 }
 
 .course-card:hover {
@@ -327,7 +346,7 @@ defineExpose({
   margin: 0.75rem 0;
 }
 
-.created-date {
+.archived-date {
   display: flex;
   align-items: center;
   gap: 0.4rem;
@@ -348,6 +367,10 @@ defineExpose({
 .course-content .course-header h3 {
   margin: 0 0 0.5rem 0;
   color: var(--primary-color);
+}
+
+.archived-content {
+  opacity: 0.95;
 }
 
 .module-order {

@@ -370,9 +370,12 @@ async def submit_for_review(
 @router.get("/workspaces/{workspace_id}/courses/pending", response_model=PendingCoursesResponse)
 async def get_pending_courses(
     workspace_id: UUID,
+    project_id: UUID | None = None,
     current_user = Depends(get_current_user)
 ):
-    """Get pending courses for review"""
+    """Get pending courses for review.
+    Can optionally filter by project_id to show only courses for a specific project.
+    """
     try:
         # Check review permission
         has_perm = await course_rbac_service.check_course_permission(
@@ -381,20 +384,33 @@ async def get_pending_courses(
         if not has_perm and not current_user.is_super_admin:
             raise HTTPException(status_code=403, detail="No permission to review courses")
 
+        # Build query with optional project filter
+        if project_id:
+            where_clause = "WHERE c.status = 'pending' AND c.workspace_id = $1 AND c.project_id = $2"
+            params = [workspace_id, project_id]
+        else:
+            where_clause = "WHERE c.status = 'pending' AND c.workspace_id = $1"
+            params = [workspace_id]
+
         async with db_manager.postgres_pool.acquire() as conn:
-            courses = await conn.fetch("""
+            courses = await conn.fetch(f"""
                 SELECT
                     c.id, c.name, c.description, c.status,
                     c.created_at, c.created_by, c.version_number,
                     u.email as creator_email,
-                    p.name as project_name
+                    c.project_id,
+                    p.name as project_name,
+                    COUNT(DISTINCT m.id) as module_count,
+                    COUNT(DISTINCT l.id) as lesson_count
                 FROM learning.courses c
                 LEFT JOIN auth.users u ON u.id = c.created_by
                 LEFT JOIN auth.projects p ON p.id = c.project_id
-                WHERE c.status = 'pending'
-                AND c.workspace_id = $1
+                LEFT JOIN learning.course_modules m ON m.course_id = c.id
+                LEFT JOIN learning.course_lessons l ON l.module_id = m.id
+                {where_clause}
+                GROUP BY c.id, c.name, c.description, c.status, c.created_at, c.created_by, c.version_number, u.email, c.project_id, p.name
                 ORDER BY c.created_at DESC
-            """, workspace_id)
+            """, *params)
 
             return PendingCoursesResponse(
                 workspace_id=workspace_id,
@@ -410,17 +426,29 @@ async def get_pending_courses(
 @router.get("/workspaces/{workspace_id}/courses/draft", response_model=PendingCoursesResponse)
 async def get_draft_courses(
     workspace_id: UUID,
+    project_id: UUID | None = None,
     current_user = Depends(get_current_user)
 ):
-    """Get draft courses for the current user"""
+    """Get draft courses for the current user.
+    Can optionally filter by project_id to show only courses for a specific project.
+    """
     try:
+        # Build query with optional project filter
+        if project_id:
+            where_clause = "WHERE c.status = 'draft' AND c.workspace_id = $1 AND c.project_id = $2 AND c.created_by = $3"
+            params = [workspace_id, project_id, current_user.user_id]
+        else:
+            where_clause = "WHERE c.status = 'draft' AND c.workspace_id = $1 AND c.created_by = $2"
+            params = [workspace_id, current_user.user_id]
+
         async with db_manager.postgres_pool.acquire() as conn:
             # Show courses created by the current user with module/lesson counts
-            courses = await conn.fetch("""
+            courses = await conn.fetch(f"""
                 SELECT
                     c.id, c.name, c.description, c.status,
                     c.created_at, c.created_by,
                     u.email as creator_email,
+                    c.project_id,
                     p.name as project_name,
                     COUNT(DISTINCT m.id) as module_count,
                     COUNT(DISTINCT l.id) as lesson_count
@@ -429,12 +457,10 @@ async def get_draft_courses(
                 LEFT JOIN auth.projects p ON p.id = c.project_id
                 LEFT JOIN learning.course_modules m ON m.course_id = c.id
                 LEFT JOIN learning.course_lessons l ON l.module_id = m.id
-                WHERE c.status = 'draft'
-                AND c.workspace_id = $1
-                AND c.created_by = $2
-                GROUP BY c.id, c.name, c.description, c.status, c.created_at, c.created_by, u.email, p.name
+                {where_clause}
+                GROUP BY c.id, c.name, c.description, c.status, c.created_at, c.created_by, u.email, c.project_id, p.name
                 ORDER BY c.created_at DESC
-            """, workspace_id, current_user.user_id)
+            """, *params)
 
             return PendingCoursesResponse(
                 workspace_id=workspace_id,
@@ -530,7 +556,7 @@ async def approve_course(
     data: ReviewActionRequest,
     current_user = Depends(get_current_user)
 ):
-    """Approve and publish a course"""
+    """Approve a course (does NOT publish yet)"""
     try:
         async with db_manager.postgres_pool.acquire() as conn:
             # Get course
@@ -549,24 +575,7 @@ async def approve_course(
             if not has_perm and not current_user.is_super_admin:
                 raise HTTPException(status_code=403, detail="No permission to review courses")
 
-            # Archive existing published course for this project (if any)
-            existing_published = await conn.fetchrow(
-                """SELECT id FROM learning.courses
-                   WHERE project_id = $1 AND status = 'published' AND id != $2""",
-                course["project_id"], course_id
-            )
-
-            archived_course_id = None
-            if existing_published:
-                await conn.execute(
-                    """UPDATE learning.courses
-                       SET status = 'archived', archived_at = CURRENT_TIMESTAMP
-                       WHERE id = $1""",
-                    existing_published["id"]
-                )
-                archived_course_id = str(existing_published["id"])
-
-            # Update status to approved (not published yet)
+            # Update status to approved (do NOT archive - that happens on publish)
             await conn.execute(
                 """UPDATE learning.courses
                    SET status = 'approved',
@@ -585,14 +594,11 @@ async def approve_course(
             )
 
         message = "Curso aprobado. Listo para publicar."
-        if archived_course_id:
-            message += f" Curso anterior archivado."
 
         return ReviewActionResponse(
             course_id=course_id,
             status="approved",
-            message=message,
-            archived_course_id=archived_course_id
+            message=message
         )
 
     except HTTPException:
@@ -834,17 +840,29 @@ async def delete_course(
 @router.get("/workspaces/{workspace_id}/courses/approved", response_model=PendingCoursesResponse)
 async def get_approved_courses(
     workspace_id: UUID,
+    project_id: UUID | None = None,
     current_user = Depends(get_current_user_optional)
 ):
-    """Get approved courses (ready to publish) in a workspace"""
+    """Get approved courses (ready to publish) in a workspace.
+    Can optionally filter by project_id to show only courses for a specific project.
+    """
     try:
+        # Build query with optional project filter
+        if project_id:
+            where_clause = "WHERE c.workspace_id = $1 AND c.project_id = $2 AND c.status = 'approved'"
+            params = [workspace_id, project_id]
+        else:
+            where_clause = "WHERE c.workspace_id = $1 AND c.status = 'approved'"
+            params = [workspace_id]
+
         async with db_manager.postgres_pool.acquire() as conn:
-            courses = await conn.fetch("""
+            courses = await conn.fetch(f"""
                 SELECT
                     c.id,
                     c.name,
                     c.description,
                     c.status,
+                    c.scope,
                     c.created_at,
                     c.reviewed_at,
                     c.reviewed_by,
@@ -858,11 +876,10 @@ async def get_approved_courses(
                 LEFT JOIN auth.users u ON c.reviewed_by = u.id
                 LEFT JOIN learning.course_modules m ON m.course_id = c.id
                 LEFT JOIN learning.course_lessons l ON l.module_id = m.id
-                WHERE c.workspace_id = $1
-                AND c.status = 'approved'
-                GROUP BY c.id, c.name, c.description, c.status, c.created_at, c.reviewed_at, c.reviewed_by, u.email, c.project_id, p.name
+                {where_clause}
+                GROUP BY c.id, c.name, c.description, c.status, c.scope, c.created_at, c.reviewed_at, c.reviewed_by, u.email, c.project_id, p.name
                 ORDER BY c.reviewed_at DESC
-            """, workspace_id)
+            """, *params)
 
             return PendingCoursesResponse(
                 workspace_id=workspace_id,
@@ -902,6 +919,7 @@ async def get_published_courses(
                     c.name,
                     c.description,
                     c.status,
+                    c.scope,
                     c.created_at,
                     c.published_at,
                     c.project_id,
@@ -916,7 +934,7 @@ async def get_published_courses(
                 LEFT JOIN learning.lesson_progress lp ON lp.lesson_id = l.id AND lp.user_id = $2
                 WHERE c.workspace_id = $1
                 AND c.status = 'published'
-                GROUP BY c.id, c.name, c.description, c.status, c.created_at, c.published_at, c.project_id, p.name
+                GROUP BY c.id, c.name, c.description, c.status, c.scope, c.created_at, c.published_at, c.project_id, p.name
                 ORDER BY c.published_at DESC
             """, workspace_id, current_user.user_id if current_user else None)
 
@@ -938,9 +956,183 @@ async def get_published_courses(
                     "module_count": row["module_count"],
                     "lesson_count": row["lesson_count"],
                     "published_at": str(row["published_at"]) if row["published_at"] else None,
+                    "completed_lessons": row["completed_lessons"],
+                    "scope": row["scope"]
+                } for row in courses]
+            )
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/courses/archived", response_model=PendingCoursesResponse)
+async def get_archived_courses(
+    project_id: UUID | None = None,
+    workspace_id: UUID | None = None,
+    current_user = Depends(get_current_user)
+):
+    """Get archived courses. Can filter by project_id or workspace_id."""
+    try:
+        async with db_manager.postgres_pool.acquire() as conn:
+            # Build query based on filters
+            if project_id:
+                # Get archived courses for a specific project
+                courses = await conn.fetch("""
+                    SELECT
+                        c.id,
+                        c.name,
+                        c.description,
+                        c.status,
+                        c.created_at,
+                        c.archived_at as reviewed_at,
+                        c.created_by,
+                        u.email as creator_email,
+                        c.project_id,
+                        p.name as project_name,
+                        COUNT(DISTINCT m.id) as module_count,
+                        COUNT(DISTINCT l.id) as lesson_count,
+                        0 as completed_lessons
+                    FROM learning.courses c
+                    JOIN auth.projects p ON c.project_id = p.id
+                    LEFT JOIN auth.users u ON c.created_by = u.id
+                    LEFT JOIN learning.course_modules m ON m.course_id = c.id
+                    LEFT JOIN learning.course_lessons l ON l.module_id = m.id
+                    WHERE c.project_id = $1
+                    AND c.status = 'archived'
+                    GROUP BY c.id, c.name, c.description, c.status, c.created_at, c.archived_at, c.created_by, u.email, c.project_id, p.name
+                    ORDER BY c.archived_at DESC
+                """, project_id)
+            elif workspace_id:
+                # Get archived courses for a workspace
+                courses = await conn.fetch("""
+                    SELECT
+                        c.id,
+                        c.name,
+                        c.description,
+                        c.status,
+                        c.created_at,
+                        c.archived_at as reviewed_at,
+                        c.created_by,
+                        u.email as creator_email,
+                        c.project_id,
+                        p.name as project_name,
+                        COUNT(DISTINCT m.id) as module_count,
+                        COUNT(DISTINCT l.id) as lesson_count,
+                        0 as completed_lessons
+                    FROM learning.courses c
+                    JOIN auth.projects p ON c.project_id = p.id
+                    LEFT JOIN auth.users u ON c.created_by = u.id
+                    LEFT JOIN learning.course_modules m ON m.course_id = c.id
+                    LEFT JOIN learning.course_lessons l ON l.module_id = m.id
+                    WHERE c.workspace_id = $1
+                    AND c.status = 'archived'
+                    GROUP BY c.id, c.name, c.description, c.status, c.created_at, c.archived_at, c.created_by, u.email, c.project_id, p.name
+                    ORDER BY c.archived_at DESC
+                """, workspace_id)
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Must provide either project_id or workspace_id"
+                )
+
+            return PendingCoursesResponse(
+                workspace_id=workspace_id or UUID("00000000-0000-0000-0000-000000000000"),
+                courses=[{
+                    "id": str(row["id"]),
+                    "name": row["name"],
+                    "description": row["description"] or "",
+                    "status": row["status"],
+                    "created_at": str(row["created_at"]),
+                    "created_by": str(row["created_by"]) if row["created_by"] else "",
+                    "creator_email": row["creator_email"] or "",
+                    "reviewed_at": str(row["reviewed_at"]) if row["reviewed_at"] else "",
+                    "reviewed_by": "",
+                    "reviewer_email": "",
+                    "project_id": str(row["project_id"]),
+                    "project_name": row["project_name"],
+                    "module_count": row["module_count"],
+                    "lesson_count": row["lesson_count"],
+                    "published_at": None,
                     "completed_lessons": row["completed_lessons"]
                 } for row in courses]
             )
 
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/courses/{course_id}/republish", response_model=ReviewActionResponse)
+async def republish_course(
+    course_id: UUID,
+    current_user = Depends(get_current_user)
+):
+    """Republish an archived course. If another course is already published, archive it first."""
+    try:
+        async with db_manager.postgres_pool.acquire() as conn:
+            # Get course
+            course = await conn.fetchrow(
+                "SELECT * FROM learning.courses WHERE id = $1",
+                course_id
+            )
+
+            if not course:
+                raise HTTPException(status_code=404, detail="Course not found")
+
+            # Check if it's archived
+            if course["status"] != "archived":
+                raise HTTPException(
+                    status_code=400,
+                    detail="Solo se pueden republicar cursos archivados"
+                )
+
+            # Check publish permission
+            can_publish = await course_rbac_service.check_course_permission(
+                current_user.user_id, course["workspace_id"], "courses:publish"
+            )
+            if not can_publish and not current_user.is_super_admin:
+                raise HTTPException(
+                    status_code=403,
+                    detail="No tienes permiso para publicar cursos"
+                )
+
+            # Check for existing published course in this project
+            existing_published = await conn.fetchrow(
+                """SELECT id, name FROM learning.courses
+                   WHERE project_id = $1 AND status = 'published' AND id != $2""",
+                course["project_id"], course_id
+            )
+
+            archived_course_id = None
+            if existing_published:
+                # Archive the currently published course
+                await conn.execute(
+                    """UPDATE learning.courses
+                       SET status = 'archived', archived_at = CURRENT_TIMESTAMP
+                       WHERE id = $1""",
+                    existing_published["id"]
+                )
+                archived_course_id = existing_published["id"]
+
+            # Republish the archived course
+            await conn.execute(
+                """UPDATE learning.courses
+                   SET status = 'published',
+                       published_at = CURRENT_TIMESTAMP,
+                       archived_at = NULL
+                   WHERE id = $1""",
+                course_id
+            )
+
+            return ReviewActionResponse(
+                course_id=course_id,
+                status="published",
+                message=f"Curso '{course['name']}' republicado exitosamente.{f' Curso anterior archivado.' if archived_course_id else ''}",
+                archived_course_id=archived_course_id
+            )
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

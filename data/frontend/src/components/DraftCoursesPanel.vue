@@ -260,6 +260,7 @@ import { marked } from 'marked'
 
 interface Props {
   workspaceId?: string
+  projectId?: string
 }
 
 interface Course {
@@ -319,7 +320,7 @@ async function loadCourses() {
 
   loading.value = true
   try {
-    const response = await courseGenerationService.getDraftCourses(props.workspaceId)
+    const response = await courseGenerationService.getDraftCourses(props.workspaceId, props.projectId)
     courses.value = response.courses
   } catch (e: any) {
     console.error('Error loading draft courses:', e)
@@ -522,17 +523,12 @@ function onCourseGenerated() {
   emit('courseGenerated')
 }
 
-watch(() => props.workspaceId, () => {
+// Solo cargar cuando ambos estén disponibles
+watch(() => [props.workspaceId, props.projectId], () => {
   if (props.workspaceId) {
     loadCourses()
   }
 }, { immediate: true })
-
-onMounted(() => {
-  if (props.workspaceId) {
-    loadCourses()
-  }
-})
 
 // Expose loadCourses for parent component to call
 defineExpose({

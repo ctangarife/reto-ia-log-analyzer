@@ -217,16 +217,20 @@ class CourseGenerationService {
   /**
    * Get pending courses for review
    */
-  async getPendingCourses(workspaceId: string): Promise<PendingCoursesResponse> {
-    const response = await api.get(`${this.baseUrl}/workspaces/${workspaceId}/courses/pending`)
+  async getPendingCourses(workspaceId: string, projectId?: string): Promise<PendingCoursesResponse> {
+    const params: any = {}
+    if (projectId) params.project_id = projectId
+    const response = await api.get(`${this.baseUrl}/workspaces/${workspaceId}/courses/pending`, { params })
     return response.data
   }
 
   /**
    * Get draft courses for the current user
    */
-  async getDraftCourses(workspaceId: string): Promise<PendingCoursesResponse> {
-    const response = await api.get(`${this.baseUrl}/workspaces/${workspaceId}/courses/draft`)
+  async getDraftCourses(workspaceId: string, projectId?: string): Promise<PendingCoursesResponse> {
+    const params: any = {}
+    if (projectId) params.project_id = projectId
+    const response = await api.get(`${this.baseUrl}/workspaces/${workspaceId}/courses/draft`, { params })
     return response.data
   }
 
@@ -284,8 +288,10 @@ class CourseGenerationService {
   /**
    * Get approved courses (ready to publish)
    */
-  async getApprovedCourses(workspaceId: string): Promise<PendingCoursesResponse> {
-    const response = await api.get(`${this.baseUrl}/workspaces/${workspaceId}/courses/approved`)
+  async getApprovedCourses(workspaceId: string, projectId?: string): Promise<PendingCoursesResponse> {
+    const params: any = {}
+    if (projectId) params.project_id = projectId
+    const response = await api.get(`${this.baseUrl}/workspaces/${workspaceId}/courses/approved`, { params })
     return response.data
   }
 
@@ -294,6 +300,28 @@ class CourseGenerationService {
    */
   async getPublishedCourses(workspaceId: string): Promise<PendingCoursesResponse> {
     const response = await api.get(`${this.baseUrl}/workspaces/${workspaceId}/courses/published`)
+    return response.data
+  }
+
+  /**
+   * Get archived courses
+   * Can filter by project_id or workspace_id
+   */
+  async getArchivedCourses(projectId?: string, workspaceId?: string): Promise<PendingCoursesResponse> {
+    const params: any = {}
+    if (projectId) params.project_id = projectId
+    if (workspaceId) params.workspace_id = workspaceId
+
+    const response = await api.get(`${this.baseUrl}/courses/archived`, { params })
+    return response.data
+  }
+
+  /**
+   * Republish an archived course
+   * If another course is already published, it will be archived first
+   */
+  async republishCourse(courseId: string): Promise<ReviewActionResponse> {
+    const response = await api.post(`${this.baseUrl}/courses/${courseId}/republish`)
     return response.data
   }
 }

@@ -10,7 +10,7 @@ import json
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
@@ -630,7 +630,7 @@ async def migrate_v2_courses_table():
 @app.post("/process", response_model=ProcessResponseV2)
 async def process_file(
     file: UploadFile = File(...),
-    project_id: str = None
+    project_id: str = Form(...)
 ):
     """
     Procesar archivo usando arquitectura multi-DB con servicios refactorizados.
@@ -1002,16 +1002,23 @@ async def reanalyze_job(job_id: str):
         )
 
 @app.get("/reports")
-async def get_reports():
-    """Obtener todos los reportes desde la base de datos"""
+async def get_reports(project_id: str | None = None):
+    """Obtener reportes desde la base de datos, filtrados por project_id si se proporciona"""
     try:
-        # Obtener todos los jobs completados
+        # Obtener jobs completados, filtrados por project_id si se proporciona
         async with db_manager.postgres_pool.acquire() as conn:
-            jobs = await conn.fetch("""
-                SELECT * FROM processing.processing_jobs 
-                WHERE status = 'completed' 
-                ORDER BY completed_at DESC
-            """)
+            if project_id:
+                jobs = await conn.fetch("""
+                    SELECT * FROM processing.processing_jobs
+                    WHERE status = 'completed' AND project_id = $1
+                    ORDER BY completed_at DESC
+                """, project_id)
+            else:
+                jobs = await conn.fetch("""
+                    SELECT * FROM processing.processing_jobs
+                    WHERE status = 'completed'
+                    ORDER BY completed_at DESC
+                """)
         
         reports = []
         

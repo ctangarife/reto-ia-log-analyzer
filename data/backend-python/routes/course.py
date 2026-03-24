@@ -2,6 +2,7 @@
 Course Routes
 API endpoints for the interactive mini-course system
 """
+import logging
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -18,6 +19,8 @@ from models.learning_models import (
 )
 from config.database import db_manager
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/projects/{project_id}/course", tags=["course"])
 
 
@@ -28,10 +31,14 @@ async def get_course_progress(
 ):
     """Get complete course progress for the current user in a project"""
     try:
+        logger.info(f"[get_course_progress] Called with project_id={project_id}, user_id={current_user.user_id}")
         # Get progress - NO auto-initialization
         # Courses should only be created when explicitly requested
-        return await course_service.get_course_progress(current_user.user_id, project_id)
+        result = await course_service.get_course_progress(current_user.user_id, project_id)
+        logger.info(f"[get_course_progress] Returning course_id={result.course_id}, course_name={result.course_name}")
+        return result
     except Exception as e:
+        logger.error(f"[get_course_progress] Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

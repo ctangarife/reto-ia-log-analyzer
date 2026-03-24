@@ -29,6 +29,8 @@ export default defineConfig({
   },
   build: {
     // Desactivar cache del módulo en desarrollo
-    modulePreload: false
+    modulePreload: false,
+    // No limpiar el directorio de salida (permite escribir en volumen montado)
+    emptyOutDir: false
   }
 })
