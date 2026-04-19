@@ -101,11 +101,12 @@
         </Message>
 
         <Button
-          type="submit"
+          type="button"
           label="Registrarse"
           :loading="isLoading"
           class="register-button"
           :disabled="!isFormValid"
+          @click="handleRegister"
         />
 
         <div class="form-footer">

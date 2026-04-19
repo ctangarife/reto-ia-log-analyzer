@@ -8,11 +8,11 @@
 
       <form @submit.prevent="handleLogin" class="login-form">
         <div class="form-group">
-          <label for="username">Usuario</label>
+          <label for="username">Usuario o Email</label>
           <InputText
             id="username"
             v-model="username"
-            placeholder="Ingresa tu usuario"
+            placeholder="Ingresa tu usuario o email"
             :disabled="isLoading"
             class="w-full"
             required

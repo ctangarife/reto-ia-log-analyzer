@@ -126,36 +126,36 @@ def decode_token(token: str) -> Optional[Dict]:
 
 async def authenticate_user(username: str, password: str) -> Optional[Dict]:
     """
-    Autentica un usuario con username y password.
-    
+    Autentica un usuario con username/email y password.
+
     Args:
-        username: Nombre de usuario
+        username: Nombre de usuario o email
         password: Contraseña en texto plano
-    
+
     Returns:
         Diccionario con datos del usuario si las credenciales son válidas, None en caso contrario
     """
     try:
         async with db_manager.postgres_pool.acquire() as conn:
-            # Buscar usuario por username
+            # Buscar usuario por username O email (permite login con ambos)
             user = await conn.fetchrow(
                 """
                 SELECT id, username, email, password_hash, is_active, is_super_admin
                 FROM auth.users
-                WHERE username = $1
+                WHERE username = $1 OR email = $1
                 """,
                 username
             )
-            
+
             if not user:
                 logger.warning(f"Usuario no encontrado: {username}")
                 return None
-            
+
             # Verificar si el usuario está activo
             if not user["is_active"]:
                 logger.warning(f"Usuario inactivo: {username}")
                 return None
-            
+
             # Verificar contraseña
             if not verify_password(password, user["password_hash"]):
                 logger.warning(f"Contraseña incorrecta para usuario: {username}")

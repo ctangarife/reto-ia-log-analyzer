@@ -35,8 +35,8 @@ RUN pip install --upgrade pip && \
 RUN mkdir -p /app/reports /app/chunks
 
 # Crear usuario non-root
-RUN addgroup -g 1000 appuser && \
-    adduser -D -u 1000 -G appuser appuser
+RUN groupadd -g 1000 appuser && \
+    useradd -u 1000 -g appuser -s /bin/sh appuser
 
 # Dar permisos al directorio de trabajo
 RUN chown -R appuser:appuser /app

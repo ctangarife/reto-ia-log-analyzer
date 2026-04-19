@@ -597,6 +597,9 @@ COMMENT ON TABLE auth.roles IS 'Roles del sistema que agrupan permisos';
 -- ============================================================================
 -- SCHEMA: LEARNING - Sistema de Mini-Curso Interactivo
 -- ============================================================================
+-- Estructura v2: Course → CourseModule → CourseLesson
+-- Cada curso pertenece a un proyecto y contiene exactamente 4 módulos fijos
+-- ============================================================================
 
 CREATE SCHEMA IF NOT EXISTS learning;
 
@@ -608,30 +611,51 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA learning TO anomaly_user;
 -- Actualizar search_path para incluir el schema learning
 ALTER USER anomaly_user SET search_path = auth, processing, learning, public;
 
--- Tablas de contenido del curso (módulos y lecciones)
--- Los cursos pueden ser project-scoped o workspace-scoped
--- workspace_id se guarda como referencia para optimizar consultas de listado
-CREATE TABLE IF NOT EXISTS learning.course_modules (
+-- ============================================================================
+-- TABLA PRINCIPAL: COURSES
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS learning.courses (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    project_id UUID,  -- NULL para cursos de workspace
-    workspace_id UUID,  -- Referencia al workspace
-    module_order INT NOT NULL,
-    title VARCHAR(255) NOT NULL,
+    project_id UUID NOT NULL,
+    workspace_id UUID NOT NULL,
+    name VARCHAR(255) NOT NULL,
     description TEXT,
-    -- Flujo de trabajo de cursos
+    -- Flujo de trabajo del curso
     status VARCHAR(20) DEFAULT 'draft',  -- draft, pending, approved, published, archived
     scope VARCHAR(20) DEFAULT 'project',  -- project, workspace
     version_number INT DEFAULT 1,
-    created_by UUID,
+    -- Creación y revisión
+    created_by UUID NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     reviewed_by UUID,
     reviewed_at TIMESTAMP,
     published_at TIMESTAMP,
     archived_at TIMESTAMP,
     rejection_reason TEXT,
-    change_description TEXT,
-    UNIQUE(project_id, module_order)
+    change_description TEXT
 );
+
+-- ============================================================================
+-- TABLA: COURSE_MODULES (Hijos de courses)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS learning.course_modules (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    course_id UUID NOT NULL REFERENCES learning.courses(id) ON DELETE CASCADE,
+    module_order INT NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    -- Legacy fields (backward compatibility, se eliminan en migración futura)
+    project_id UUID,  -- Usar course.project_id en su lugar
+    workspace_id UUID,  -- Usar course.workspace_id en su lugar
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(course_id, module_order)
+);
+
+-- ============================================================================
+-- TABLA: COURSE_LESSONS (Hijos de course_modules)
+-- ============================================================================
 
 CREATE TABLE IF NOT EXISTS learning.course_lessons (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -645,7 +669,10 @@ CREATE TABLE IF NOT EXISTS learning.course_lessons (
     UNIQUE(module_id, lesson_order)
 );
 
--- Tablas de seguimiento de progreso del usuario
+-- ============================================================================
+-- TABLAS DE SEGUIMIENTO DE PROGRESO
+-- ============================================================================
+
 CREATE TABLE IF NOT EXISTS learning.lesson_progress (
     user_id UUID NOT NULL,
     project_id UUID NOT NULL,
@@ -681,10 +708,13 @@ CREATE TABLE IF NOT EXISTS learning.exercise_attempts (
     attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Tablas de flujo de trabajo y gestión de cursos
+-- ============================================================================
+-- TABLAS DE FLUJO DE TRABAJO Y GESTIÓN DE CURSOS
+-- ============================================================================
+
 CREATE TABLE IF NOT EXISTS learning.course_reviews (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    course_id UUID NOT NULL,
+    course_id UUID NOT NULL REFERENCES learning.courses(id) ON DELETE CASCADE,
     reviewer_id UUID NOT NULL,
     status VARCHAR(20) NOT NULL,  -- pending_review, approved, rejected
     comments TEXT,
@@ -694,30 +724,29 @@ CREATE TABLE IF NOT EXISTS learning.course_reviews (
 
 CREATE TABLE IF NOT EXISTS learning.course_versions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    course_module_id UUID NOT NULL,
+    course_id UUID NOT NULL REFERENCES learning.courses(id) ON DELETE CASCADE,
     version_number INT NOT NULL,
     title VARCHAR(255) NOT NULL,
     description TEXT,
     created_by UUID,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     change_description TEXT,
-    UNIQUE(course_module_id, version_number)
+    UNIQUE(course_id, version_number)
 );
 
 CREATE TABLE IF NOT EXISTS learning.course_notifications (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     workspace_id UUID NOT NULL,
     user_id UUID NOT NULL,
-    course_id UUID,
+    course_id UUID REFERENCES learning.courses(id) ON DELETE CASCADE,
     type VARCHAR(50) NOT NULL,  -- pending_review, approved, rejected, published
     is_read BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Tabla de historial de cambios de lecciones (edición granular)
 CREATE TABLE IF NOT EXISTS learning.lesson_change_history (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    lesson_id UUID NOT NULL,
+    lesson_id UUID NOT NULL REFERENCES learning.course_lessons(id) ON DELETE CASCADE,
     changed_by UUID NOT NULL,
     changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     change_type VARCHAR(50) NOT NULL,  -- content, title, exercise, minor_edit
@@ -727,26 +756,110 @@ CREATE TABLE IF NOT EXISTS learning.lesson_change_history (
     is_minor_edit BOOLEAN DEFAULT FALSE
 );
 
--- Índices para optimización
+-- ============================================================================
+-- ÍNDICES PARA OPTIMIZACIÓN
+-- ============================================================================
+
+-- Índices para courses
+CREATE INDEX IF NOT EXISTS idx_courses_project ON learning.courses(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_courses_workspace ON learning.courses(workspace_id, status);
+CREATE INDEX IF NOT EXISTS idx_courses_status ON learning.courses(status);
+
+-- Índices para course_modules
+CREATE INDEX IF NOT EXISTS idx_course_modules_course ON learning.course_modules(course_id);
+CREATE INDEX IF NOT EXISTS idx_course_modules_order ON learning.course_modules(course_id, module_order);
+
+-- Índices para course_lessons
+CREATE INDEX IF NOT EXISTS idx_course_lessons_module ON learning.course_lessons(module_id);
+CREATE INDEX IF NOT EXISTS idx_course_lessons_order ON learning.course_lessons(module_id, lesson_order);
+
+-- Índices para progreso
 CREATE INDEX IF NOT EXISTS idx_lesson_progress_user ON learning.lesson_progress(user_id, project_id);
 CREATE INDEX IF NOT EXISTS idx_lesson_progress_lesson ON learning.lesson_progress(lesson_id);
 CREATE INDEX IF NOT EXISTS idx_exercise_attempts_user ON learning.exercise_attempts(user_id, project_id);
-CREATE INDEX IF NOT EXISTS idx_course_modules_workspace ON learning.course_modules(workspace_id);  -- Para listar cursos por workspace
 CREATE INDEX IF NOT EXISTS idx_course_completion_user ON learning.course_completion(user_id, project_id);
 
--- Índices para flujo de trabajo de cursos
+-- Índices para flujo de trabajo
 CREATE INDEX IF NOT EXISTS idx_course_reviews_course ON learning.course_reviews(course_id);
-CREATE INDEX IF NOT EXISTS idx_course_versions_module ON learning.course_versions(course_module_id);
+CREATE INDEX IF NOT EXISTS idx_course_reviews_status ON learning.course_reviews(status);
+CREATE INDEX IF NOT EXISTS idx_course_versions_course ON learning.course_versions(course_id);
 CREATE INDEX IF NOT EXISTS idx_course_notifications_workspace ON learning.course_notifications(workspace_id, user_id);
 CREATE INDEX IF NOT EXISTS idx_course_notifications_unread ON learning.course_notifications(user_id, is_read);
 
--- Índices para historial de cambios de lecciones
+-- Índices para historial de cambios
 CREATE INDEX IF NOT EXISTS idx_lesson_change_history_lesson ON learning.lesson_change_history(lesson_id);
 CREATE INDEX IF NOT EXISTS idx_lesson_change_history_changed_by ON learning.lesson_change_history(changed_by);
 
--- Comentarios para el schema learning
+-- ============================================================================
+-- FUNCIONES PARA VALIDACIÓN DE LÍMITES DE CURSOS
+-- ============================================================================
+
+CREATE OR REPLACE FUNCTION learning.validate_course_limits(
+    p_project_id UUID,
+    p_workspace_id UUID,
+    p_status VARCHAR
+) RETURNS TABLE (
+    can_create BOOLEAN,
+    reason TEXT,
+    current_counts JSONB
+) AS $$
+DECLARE
+    published_count INT;
+    draft_count INT;
+    pending_count INT;
+BEGIN
+    -- Contar cursos por estado
+    SELECT COUNT(*) INTO published_count
+    FROM learning.courses
+    WHERE project_id = p_project_id
+    AND status = 'published';
+
+    SELECT COUNT(*) INTO draft_count
+    FROM learning.courses
+    WHERE project_id = p_project_id
+    AND status = 'draft';
+
+    SELECT COUNT(*) INTO pending_count
+    FROM learning.courses
+    WHERE project_id = p_project_id
+    AND status = 'pending';
+
+    -- Validar límites
+    IF p_status = 'published' AND published_count >= 1 THEN
+        RETURN QUERY SELECT FALSE, 'Ya existe un curso publicado para este proyecto', jsonb_build_object(
+            'published', published_count,
+            'draft', draft_count,
+            'pending', pending_count
+        );
+    ELSIF p_status = 'draft' AND draft_count >= 3 THEN
+        RETURN QUERY SELECT FALSE, 'Máximo de 3 cursos en borrador alcanzado', jsonb_build_object(
+            'published', published_count,
+            'draft', draft_count,
+            'pending', pending_count
+        );
+    ELSIF p_status = 'pending' AND pending_count >= 3 THEN
+        RETURN QUERY SELECT FALSE, 'Máximo de 3 cursos pendientes alcanzado', jsonb_build_object(
+            'published', published_count,
+            'draft', draft_count,
+            'pending', pending_count
+        );
+    ELSE
+        RETURN QUERY SELECT TRUE, 'Límites válidos', jsonb_build_object(
+            'published', published_count,
+            'draft', draft_count,
+            'pending', pending_count
+        );
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ============================================================================
+-- COMENTARIOS PARA DOCUMENTACIÓN
+-- ============================================================================
+
 COMMENT ON SCHEMA learning IS 'Schema para sistema de mini-curso interactivo de análisis de logs con generación dinámica';
-COMMENT ON TABLE learning.course_modules IS 'Módulos del curso (pueden ser project-scoped o workspace-scoped)';
+COMMENT ON TABLE learning.courses IS 'Curso principal - pertenece a un proyecto y contiene 4 módulos fijos';
+COMMENT ON TABLE learning.course_modules IS 'Módulos de un curso - un curso tiene 4 módulos fijos';
 COMMENT ON TABLE learning.course_lessons IS 'Lecciones individuales (pueden ser estáticas o dinámicas)';
 COMMENT ON TABLE learning.lesson_progress IS 'Progreso de usuarios por lección (por proyecto)';
 COMMENT ON TABLE learning.course_completion IS 'Registro de finalización del curso por usuario y proyecto';
@@ -755,6 +868,11 @@ COMMENT ON TABLE learning.course_reviews IS 'Registro de revisiones y aprobacion
 COMMENT ON TABLE learning.course_versions IS 'Snapshots de versiones de cursos para control de cambios';
 COMMENT ON TABLE learning.course_notifications IS 'Notificaciones para usuarios sobre eventos de cursos (revisiones pendientes, etc.)';
 COMMENT ON TABLE learning.lesson_change_history IS 'Historial de cambios de lecciones para edición granular y auditoría';
+COMMENT ON FUNCTION learning.validate_course_limits IS 'Valida los límites de cursos por proyecto: máx 1 published, 3 draft, 3 pending';
+
+-- ============================================================================
+-- FIN DEL SCHEMA LEARNING
+-- ============================================================================
 
 -- ============================================================================
 -- FIN DEL SCRIPT DE INICIALIZACIÓN

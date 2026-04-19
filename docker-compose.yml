@@ -14,14 +14,14 @@ services:
   # MONGODB - Base de Datos de Logs y Reportes
   # ==========================================================================
   mongodb:
-    image: mongo:7.0
+    image: docker.io/library/mongo:7.0
     container_name: logs-analyze-mongodb
     restart: unless-stopped
     env_file:
       - .env
     volumes:
       - mongodb_data:/data/db
-      - ./db/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+      - ./db/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:z
     ports:
       - "127.0.0.1:27017:27017"  # Solo localhost - seguridad
     networks:
@@ -39,14 +39,14 @@ services:
   # POSTGRESQL - Base de Datos de Configuración
   # ==========================================================================
   postgres:
-    image: postgres:15-alpine
+    image: docker.io/library/postgres:15-alpine
     container_name: logs-analyze-postgres
     restart: unless-stopped
     env_file:
       - .env
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:z
     ports:
       - "127.0.0.1:5432:5432"  # Solo localhost - seguridad
     networks:
@@ -64,12 +64,12 @@ services:
   # REDIS - Cache y Colas de Procesamiento
   # ==========================================================================
   redis:
-    image: redis:7.2-alpine
+    image: docker.io/library/redis:7.2-alpine
     container_name: logs-analyze-redis
     restart: unless-stopped
     volumes:
       - redis_data:/data
-      - ./build/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - ./build/redis/redis.conf:/usr/local/etc/redis/redis.conf:z
     ports:
       - "127.0.0.1:6379:6379"  # Solo localhost - seguridad
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
@@ -88,7 +88,7 @@ services:
   # QDRANT - Base de Datos Vectorial para Búsqueda de Similitud
   # ==========================================================================
   qdrant:
-    image: qdrant/qdrant:latest
+    image: docker.io/qdrant/qdrant:latest
     container_name: logs-analyze-qdrant
     ports:
       - "127.0.0.1:6333:6333"  # API REST - solo localhost
@@ -118,9 +118,9 @@ services:
     container_name: logs-analyze-detector
     restart: unless-stopped
     volumes:
-      - ./data/backend-python:/app
-      - ./data/backend-python/reports:/app/reports
-      - ./data/backend-python/chunks:/app/chunks
+      - ./data/backend-python:/app:z
+      - ./data/backend-python/reports:/app/reports:z
+      - ./data/backend-python/chunks:/app/chunks:z
     ports:
       - "8000:8000"
     env_file:
@@ -189,11 +189,14 @@ services:
       dockerfile: ./build/ui/Dockerfile
     container_name: logs-analyze-ui
     volumes:
-      - ./data/frontend:/app
-      - ./data/static:/app/dist
+      - ./data/frontend:/app:z
+      - ./data/static:/app/dist:z
     env_file:
       - .env
-    command: sh -c "cd /app && npm install && npm run build && (cp -rn dist/* /app/dist/ 2>/dev/null || true) && echo '✅ Build completado'"
+    command: >
+      sh -c "cd /app && rm -rf node_modules && npm install &&
+      npm run build && (cp -rn dist/* /app/dist/ 2>/dev/null || true) &&
+      echo '✅ Build completado'"
     depends_on:
       - anomaly-detector
     networks:
@@ -206,20 +209,20 @@ services:
   # NGINX - Reverse Proxy y Gateway Principal
   # ==========================================================================
   logs-analyze-nginx:
-    image: nginx:stable-alpine
+    image: docker.io/library/nginx:stable-alpine
     container_name: logs-analyze-nginx
     ports:
-      - "80:80"
-      - "8080:8080"  # Health check interno
+      - "8080:80"    # Puerto 80 externo requiere root, usamos 8080
+      - "8081:8080"  # Health check interno
     volumes:
       # Montar configuraciones de nginx
-      - ./server/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./server/nginx/conf.d:/etc/nginx/conf.d:ro
-      - ./server/nginx/includes:/etc/nginx/includes:ro
+      - ./server/nginx/nginx.conf:/etc/nginx/nginx.conf:z
+      - ./server/nginx/conf.d:/etc/nginx/conf.d:z
+      - ./server/nginx/includes:/etc/nginx/includes:z
       # Archivos estáticos del frontend (build de Vue)
-      - ./data/static:/usr/share/nginx/html:ro
+      - ./data/static:/usr/share/nginx/html:z
       # Logs
-      - ./data/logs/nginx:/var/log/nginx
+      - ./data/logs/nginx:/var/log/nginx:z
     depends_on:
       logs-analyze-ui:
         condition: service_completed_successfully

@@ -12,12 +12,9 @@ WORKDIR /app
 # Instalar dependencias adicionales si son necesarias
 # RUN apk add --no-cache ...
 
-# Usar el usuario 'node' que ya existe en la imagen base (UID 1000)
-# Dar permisos al directorio de trabajo
-RUN chown -R node:node /app
-
-# Cambiar al usuario node (ya existe en la imagen)
-USER node
+# NOTA: Ejecutamos como root para poder escribir en volúmenes montados
+# El volumen ./data/frontend:/app se monta con permisos del host
+# Para desarrollo, permitimos escritura como root
 
 # Exponer puerto
 EXPOSE 3000
