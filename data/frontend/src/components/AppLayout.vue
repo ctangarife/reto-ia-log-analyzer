@@ -70,6 +70,14 @@
         Aprender
       </RouterLink>
       <RouterLink
+        to="/llm-models"
+        class="nav-item"
+        :class="{ active: route.name === 'llm-models', disabled: !authStore.selectedWorkspaceId }"
+      >
+        <i class="pi pi-microchip"></i>
+        Modelos LLM
+      </RouterLink>
+      <RouterLink
         v-if="authStore.isSuperAdmin"
         to="/admin"
         class="nav-item"

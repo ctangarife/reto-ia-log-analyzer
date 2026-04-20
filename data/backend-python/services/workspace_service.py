@@ -8,7 +8,11 @@ from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import datetime
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from config.database import db_manager
+from models.orm.entities import Workspace, UserWorkspaceRole, Role
 from services.permission_service import (
     get_user_workspaces,
     validate_workspace_access,
@@ -17,6 +21,13 @@ from services.permission_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Constantes para nombres de roles
+ROLE_WORKSPACE_ADMIN = "workspace_admin"
+ROLE_PROJECT_ADMIN = "project_admin"
+ROLE_ANALYST = "analyst"
+ROLE_VIEWER = "viewer"
+ROLE_SUPER_ADMIN = "super_admin"
 
 
 def _slugify(name: str) -> str:
@@ -30,34 +41,6 @@ def _slugify(name: str) -> str:
     return s or "workspace"
 
 
-async def _ensure_unique_slug(conn, slug: str, exclude_workspace_id: Optional[UUID] = None) -> str:
-    """
-    Asegura que el slug sea único. Si existe, agrega sufijo numérico.
-    """
-    base = slug
-    candidate = base
-    n = 0
-    while True:
-        if exclude_workspace_id:
-            row = await conn.fetchval(
-                """
-                SELECT id FROM auth.workspaces
-                WHERE slug = $1 AND id != $2
-                """,
-                candidate,
-                exclude_workspace_id,
-            )
-        else:
-            row = await conn.fetchval(
-                "SELECT id FROM auth.workspaces WHERE slug = $1",
-                candidate,
-            )
-        if not row:
-            return candidate
-        n += 1
-        candidate = f"{base}-{n}"
-
-
 async def create_workspace(
     name: str,
     description: Optional[str] = None,
@@ -65,7 +48,7 @@ async def create_workspace(
     created_by: Optional[UUID] = None,
 ) -> Optional[UUID]:
     """
-    Crea un nuevo workspace.
+    Crea un nuevo workspace usando el ORM.
 
     Args:
         name: Nombre del workspace
@@ -77,23 +60,63 @@ async def create_workspace(
         UUID del workspace creado o None si hay error
     """
     try:
-        async with db_manager.postgres_pool.acquire() as conn:
+        async with await db_manager.get_async_session() as session:
+            # Generar slug único
             base_slug = (slug.strip() if slug else _slugify(name)) or _slugify(name)
-            unique_slug = await _ensure_unique_slug(conn, base_slug, exclude_workspace_id=None)
 
-            workspace_id = await conn.fetchval(
-                """
-                INSERT INTO auth.workspaces (name, slug, description, is_active, created_by)
-                VALUES ($1, $2, $3, true, $4)
-                RETURNING id
-                """,
-                name.strip(),
-                unique_slug,
-                description,
-                created_by,
+            # Verificar si el slug ya existe
+            existing = await session.execute(
+                select(Workspace).filter(Workspace.slug == base_slug)
             )
-            logger.info(f"Workspace creado: {workspace_id} ({name})")
-            return workspace_id
+            if existing.scalar_one_or_none():
+                # Slug existe, agregar sufijo numérico
+                n = 1
+                while True:
+                    candidate = f"{base_slug}-{n}"
+                    existing = await session.execute(
+                        select(Workspace).filter(Workspace.slug == candidate)
+                    )
+                    if not existing.scalar_one_or_none():
+                        unique_slug = candidate
+                        break
+                    n += 1
+            else:
+                unique_slug = base_slug
+
+            # Crear el workspace
+            workspace = Workspace(
+                name=name.strip(),
+                slug=unique_slug,
+                description=description,
+                is_active=True,
+                created_by=created_by
+            )
+            session.add(workspace)
+            await session.flush()  # Para obtener el ID
+
+            # Si hay un creador, asignarlo automáticamente como administrador del workspace
+            if created_by:
+                # Obtener el rol workspace_admin
+                role_result = await session.execute(
+                    select(Role).filter(Role.name == ROLE_WORKSPACE_ADMIN)
+                )
+                role = role_result.scalar_one_or_none()
+
+                if role:
+                    # Crear relación usuario-workspace-rol
+                    user_workspace_role = UserWorkspaceRole(
+                        user_id=created_by,
+                        workspace_id=workspace.id,
+                        role_id=role.id,
+                        assigned_by=created_by
+                    )
+                    session.add(user_workspace_role)
+                    logger.info(f"Usuario {created_by} asignado como administrador del workspace {workspace.id}")
+
+            await session.commit()
+            logger.info(f"Workspace creado: {workspace.id} ({name})")
+            return workspace.id
+
     except Exception as e:
         logger.error(f"Error creando workspace: {e}", exc_info=True)
         return None
@@ -101,7 +124,7 @@ async def create_workspace(
 
 async def get_workspace_by_id(workspace_id: UUID) -> Optional[Dict[str, Any]]:
     """
-    Obtiene un workspace por ID.
+    Obtiene un workspace por ID usando el ORM.
 
     Args:
         workspace_id: ID del workspace
@@ -110,16 +133,24 @@ async def get_workspace_by_id(workspace_id: UUID) -> Optional[Dict[str, Any]]:
         Diccionario con los datos del workspace o None si no existe
     """
     try:
-        async with db_manager.postgres_pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT id, name, slug, description, is_active, created_by, created_at, updated_at
-                FROM auth.workspaces
-                WHERE id = $1
-                """,
-                workspace_id,
+        async with await db_manager.get_async_session() as session:
+            result = await session.execute(
+                select(Workspace).filter(Workspace.id == workspace_id)
             )
-            return dict(row) if row else None
+            workspace = result.scalar_one_or_none()
+
+            if workspace:
+                return {
+                    'id': str(workspace.id),
+                    'name': workspace.name,
+                    'slug': workspace.slug,
+                    'description': workspace.description,
+                    'is_active': workspace.is_active,
+                    'created_by': str(workspace.created_by) if workspace.created_by else None,
+                    'created_at': workspace.created_at.isoformat() if workspace.created_at else None,
+                    'updated_at': workspace.updated_at.isoformat() if workspace.updated_at else None,
+                }
+            return None
     except Exception as e:
         logger.error(f"Error obteniendo workspace {workspace_id}: {e}")
         return None
@@ -143,26 +174,34 @@ async def list_workspaces_for_user(user_id: UUID) -> List[Dict[str, Any]]:
         if not accessible:
             return []
 
-        workspace_ids = [a["workspace_id"] for a in accessible]
-        role_by_id = {a["workspace_id"]: a["role_name"] for a in accessible}
+        # asyncpg ya devuelve UUID, convertir a string para evitar errores
+        workspace_ids = [UUID(str(a["workspace_id"])) for a in accessible]
+        role_by_id = {UUID(str(a["workspace_id"])): a["role_name"] for a in accessible}
 
-        async with db_manager.postgres_pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT id, name, slug, description, is_active, created_by, created_at, updated_at
-                FROM auth.workspaces
-                WHERE id = ANY($1::uuid[]) AND is_active = true
-                ORDER BY name
-                """,
-                workspace_ids,
+        async with await db_manager.get_async_session() as session:
+            # Usar IN para filtrar por workspace_ids
+            result = await session.execute(
+                select(Workspace).filter(
+                    Workspace.id.in_(workspace_ids),
+                    Workspace.is_active == True
+                ).order_by(Workspace.name)
             )
+            workspaces = result.scalars().all()
 
-        result = []
-        for row in rows:
-            d = dict(row)
-            d["role"] = role_by_id.get(row["id"], "")
-            result.append(d)
-        return result
+            result_list = []
+            for workspace in workspaces:
+                result_list.append({
+                    'id': str(workspace.id),
+                    'name': workspace.name,
+                    'slug': workspace.slug,
+                    'description': workspace.description,
+                    'is_active': workspace.is_active,
+                    'created_by': str(workspace.created_by) if workspace.created_by else None,
+                    'created_at': workspace.created_at.isoformat() if workspace.created_at else None,
+                    'updated_at': workspace.updated_at.isoformat() if workspace.updated_at else None,
+                    'role': role_by_id.get(workspace.id, "")
+                })
+            return result_list
     except Exception as e:
         logger.error(f"Error listando workspaces para usuario {user_id}: {e}", exc_info=True)
         return []
@@ -176,7 +215,7 @@ async def update_workspace(
     slug: Optional[str] = None,
 ) -> bool:
     """
-    Actualiza un workspace.
+    Actualiza un workspace usando el ORM.
 
     Args:
         workspace_id: ID del workspace
@@ -189,54 +228,54 @@ async def update_workspace(
         True si se actualizó, False si no existe o error
     """
     try:
-        async with db_manager.postgres_pool.acquire() as conn:
-            current = await conn.fetchrow(
-                "SELECT name, slug FROM auth.workspaces WHERE id = $1",
-                workspace_id,
+        async with await db_manager.get_async_session() as session:
+            # Obtener el workspace actual
+            result = await session.execute(
+                select(Workspace).filter(Workspace.id == workspace_id)
             )
-            if not current:
+            workspace = result.scalar_one_or_none()
+
+            if not workspace:
                 return False
 
-            updates = []
-            params = []
-            n = 0
-
+            # Actualizar campos si se proporcionan
             if name is not None:
-                n += 1
-                updates.append(f"name = ${n}")
-                params.append(name.strip())
+                workspace.name = name.strip()
             if description is not None:
-                n += 1
-                updates.append(f"description = ${n}")
-                params.append(description)
+                workspace.description = description
             if is_active is not None:
-                n += 1
-                updates.append(f"is_active = ${n}")
-                params.append(is_active)
+                workspace.is_active = is_active
             if slug is not None:
-                base_slug = (slug.strip() or _slugify(current["name"])).strip() or _slugify(current["name"])
-                unique_slug = await _ensure_unique_slug(conn, base_slug, exclude_workspace_id=workspace_id)
-                n += 1
-                updates.append(f"slug = ${n}")
-                params.append(unique_slug)
+                base_slug = slug.strip() if slug.strip() else _slugify(workspace.name)
+                # Verificar unicidad del slug
+                existing = await session.execute(
+                    select(Workspace).filter(
+                        Workspace.slug == base_slug,
+                        Workspace.id != workspace_id
+                    )
+                )
+                if existing.scalar_one_or_none():
+                    # Slug existe, agregar sufijo numérico
+                    n = 1
+                    while True:
+                        candidate = f"{base_slug}-{n}"
+                        existing = await session.execute(
+                            select(Workspace).filter(
+                                Workspace.slug == candidate,
+                                Workspace.id != workspace_id
+                            )
+                        )
+                        if not existing.scalar_one_or_none():
+                            workspace.slug = candidate
+                            break
+                        n += 1
+                else:
+                    workspace.slug = base_slug
 
-            if not updates:
-                return True
-
-            n += 1
-            updates.append(f"updated_at = CURRENT_TIMESTAMP")
-            params.append(workspace_id)
-
-            await conn.execute(
-                f"""
-                UPDATE auth.workspaces
-                SET {", ".join(updates)}
-                WHERE id = ${n}
-                """,
-                *params,
-            )
-            logger.info(f"Workspace actualizado: {workspace_id}")
+            await session.commit()
+            logger.info(f"Workspace {workspace_id} actualizado")
             return True
+
     except Exception as e:
         logger.error(f"Error actualizando workspace {workspace_id}: {e}", exc_info=True)
         return False

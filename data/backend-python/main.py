@@ -38,6 +38,7 @@ from routes.course import router as course_router, workspace_router
 from routes.course_generation import router as course_generation_router
 from routes.course_rbac import router as course_rbac_router
 from routes.lesson_edit import router as lesson_edit_router
+from routes.llm_config import router as llm_config_router
 
 # Configurar logging
 logging.basicConfig(
@@ -112,6 +113,7 @@ app.include_router(workspace_router)
 app.include_router(course_generation_router)
 app.include_router(course_rbac_router)
 app.include_router(lesson_edit_router)
+app.include_router(llm_config_router)
 
 # === ENDPOINTS ===
 

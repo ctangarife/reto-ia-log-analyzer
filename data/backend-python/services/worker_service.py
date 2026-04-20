@@ -34,34 +34,67 @@ class WorkerService:
         self.embedding_sample_rate = int(os.getenv("EMBEDDING_SAMPLE_RATE", "10"))  # 1 de cada N líneas usa embeddings
         self._line_counter = 0  # Contador para muestreo
 
+    def _has_sufficient_global_normal_logs(self) -> bool:
+        """
+        Verifica si hay suficientes logs normales globales para búsqueda global.
+
+        Returns:
+            True si hay ≥100 logs normales acumulados globalmente
+        """
+        try:
+            qdrant = qdrant_service.get_qdrant_client()
+            collection_info = qdrant.get_collection(qdrant_service.COLLECTION_NORMAL_LOGS)
+            total_points = collection_info.points_count
+            return total_points >= 100
+        except Exception as e:
+            print(f"Error verificando logs globales: {e}")
+            return False
+
     async def _detect_anomaly_with_embeddings(
         self,
         log_line: str,
         job_id: str
-    ) -> tuple[bool, float, list]:
+    ) -> tuple[bool, float, list, str]:
         """
         Detecta anomalías usando búsqueda de similitud vectorial en Qdrant.
+        Sistema híbrido de tres niveles:
+
+        1. qdrant_global: Búsqueda global cuando hay ≥100 logs normales acumulados
+        2. qdrant_job: Búsqueda específica del job cuando hay suficientes datos del job
+        3. isolation_forest: Fallback cuando no hay suficientes datos
 
         Args:
             log_line: Línea de log a analizar
             job_id: ID del job actual
 
         Returns:
-            (is_anomaly, similarity_score, similar_logs)
+            (is_anomaly, similarity_score, similar_logs, detection_method)
         """
         try:
-            # Buscar logs normales similares en Qdrant
-            similar_logs = await qdrant_service.find_similar_normal_logs(
-                log_entry=log_line,
-                limit=3,
-                min_score=0.0,  # Obtener todos para calcular score
-                job_id=job_id
-            )
+            # MODO 1: Búsqueda global (acumulativa) - requiere ≥100 logs normales globales
+            if self._has_sufficient_global_normal_logs():
+                similar_logs = await qdrant_service.find_similar_normal_logs(
+                    log_entry=log_line,
+                    limit=3,
+                    min_score=0.0,
+                    job_id=job_id,
+                    global_search=True  # Buscar en TODOS los jobs acumulados
+                )
+                detection_method = "qdrant_global"
+            else:
+                # MODO 2: Búsqueda específica del job
+                similar_logs = await qdrant_service.find_similar_normal_logs(
+                    log_entry=log_line,
+                    limit=3,
+                    min_score=0.0,
+                    job_id=job_id,
+                    global_search=False  # Solo buscar en este job
+                )
+                detection_method = "qdrant_job"
 
             if not similar_logs:
-                # No hay logs normales de referencia aún
-                # Consideramos "normal" pero para almacenar
-                return False, 0.0, []
+                # MODO 3: Fallback - No hay suficientes datos de referencia
+                return False, 0.0, [], "isolation_forest_fallback"
 
             # Calcular score máximo de similitud
             max_similarity = max(log["similarity_score"] for log in similar_logs)
@@ -69,12 +102,12 @@ class WorkerService:
             # Si la similitud máxima está por debajo del threshold, es anomalía
             is_anomaly = max_similarity < self.similarity_threshold
 
-            return is_anomaly, max_similarity, similar_logs
+            return is_anomaly, max_similarity, similar_logs, detection_method
 
         except Exception as e:
             print(f"Error en detección con embeddings: {e}")
             # Fallback a no-anomalía si hay error
-            return False, 0.0, []
+            return False, 0.0, [], "error"
 
     async def _store_normal_logs_batch(
         self,
@@ -226,7 +259,7 @@ class WorkerService:
                     self._line_counter += 1
                     # Solo usar embeddings para 1 de cada N líneas (muestreo)
                     if self._line_counter % self.embedding_sample_rate == 0:
-                        is_anomaly_embeddings, embedding_score, similar_logs = await self._detect_anomaly_with_embeddings(line, job_id)
+                        is_anomaly_embeddings, embedding_score, similar_logs, detection_method = await self._detect_anomaly_with_embeddings(line, job_id)
 
                 # --- PASO 4: Combinar resultados (OR lógico) ---
                 is_anomaly = is_anomaly_structured or is_anomaly_keywords or is_anomaly_embeddings
@@ -303,14 +336,24 @@ class WorkerService:
                         if similar_logs:
                             context_note = f"\n\n[Contexto: Se encontraron {len(similar_logs)} logs normales similares con score máximo de {max(l['similarity_score'] for l in similar_logs):.2f}]"
 
-                        enhanced_explanation = explanation + context_note
+                        # Agregar información del método de detección
+                        method_note = f"\n\n[Método de detección: {detection_method}]"
+                        if detection_method == "qdrant_global":
+                            method_note += " - Búsqueda global acumulativa (≥100 logs normales)"
+                        elif detection_method == "qdrant_job":
+                            method_note += " - Búsqueda específica del job actual"
+                        elif detection_method == "isolation_forest_fallback":
+                            method_note += " - Fallback: Datos insuficientes para análisis vectorial"
+
+                        enhanced_explanation = explanation + context_note + method_note
 
                         anomaly_result = AnomalyResultV2(
                             log_entry=line,
                             score=score,
                             is_anomaly=True,
                             explanation=enhanced_explanation,
-                            chunk_id=chunk_id
+                            chunk_id=chunk_id,
+                            detection_method=detection_method
                         )
                         batch_anomalies.append(anomaly_result)
                         anomalies.append(anomaly_result)

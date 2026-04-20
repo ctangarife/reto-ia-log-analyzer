@@ -43,6 +43,7 @@ class AnomalyResultV2(BaseModel):
     is_anomaly: bool
     explanation: str
     chunk_id: str
+    detection_method: Optional[str] = None  # Método usado: qdrant_global, qdrant_job, isolation_forest
 
 class ChunkResult(BaseModel):
     chunk_id: str

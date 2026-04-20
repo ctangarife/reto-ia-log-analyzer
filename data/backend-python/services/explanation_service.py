@@ -5,10 +5,11 @@ Usa composición de servicios especializados en lugar de hacer todo internamente
 """
 import os
 import logging
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
 
 from .interfaces import LLMClientInterface
-from .llm import OllamaClientWrapper
+from .llm import OllamaClientWrapper, get_default_llm_service, get_llm_service, LLMServiceAdapter, get_llm_service_with_fallback
+from models.schemas.llm import LLMProvider
 from .log_analysis import LogParser, LogMetadata
 from .prompts import PromptBuilder
 from .explanation import ResponseParser, FallbackExplanationGenerator
@@ -34,17 +35,19 @@ class ExplanationService:
         log_parser: Optional[LogParser] = None,
         prompt_builder: Optional[PromptBuilder] = None,
         response_parser: Optional[ResponseParser] = None,
-        fallback_generator: Optional[FallbackExplanationGenerator] = None
+        fallback_generator: Optional[FallbackExplanationGenerator] = None,
+        workspace_id: Optional[str] = None
     ):
         """
         Inicializa el servicio de explicaciones con dependencias inyectadas.
-        
+
         Args:
             llm_client: Cliente LLM (si None, crea OllamaClientWrapper)
             log_parser: Parser de logs (si None, crea uno nuevo)
             prompt_builder: Constructor de prompts (si None, crea uno nuevo)
             response_parser: Parser de respuestas (si None, crea uno nuevo)
             fallback_generator: Generador de fallback (si None, crea uno nuevo)
+            workspace_id: ID del workspace (para usar configuración con fallback)
         """
         # Inyección de dependencias - permite testing y flexibilidad
         self.llm_client = llm_client or self._create_llm_client()
@@ -52,68 +55,110 @@ class ExplanationService:
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.response_parser = response_parser or ResponseParser()
         self.fallback_generator = fallback_generator or FallbackExplanationGenerator()
-        
+        self.workspace_id = workspace_id
+
         # Configuración desde variables de entorno
         self.temperature = float(os.getenv("OLLAMA_TEMPERATURE", "0.7"))
         self.max_tokens = int(os.getenv("OLLAMA_MAX_TOKENS", "200"))
-        
+
         logger.info("ExplanationService inicializado con servicios especializados")
     
     def _create_llm_client(self) -> LLMClientInterface:
-        """Crea el cliente LLM por defecto (Ollama Cloud)."""
+        """Crea el cliente LLM por defecto usando el factory pattern."""
         try:
-            return OllamaClientWrapper()
+            # Usar el factory para obtener el servicio default
+            llm_service = get_default_llm_service()
+
+            # Crear adaptador para compatibilidad con LLMClientInterface
+            return LLMServiceAdapter(
+                llm_service=llm_service,
+                provider=llm_service.__class__.__name__,
+                model=llm_service.default_model
+            )
         except (ValueError, ImportError) as e:
-            logger.warning(f"No se pudo crear cliente Ollama: {e}")
+            logger.warning(f"No se pudo crear cliente LLM: {e}")
             logger.warning("Se usará fallback para todas las explicaciones")
             return None
+
+    async def _get_llm_client_with_fallback(self) -> Optional[LLMClientInterface]:
+        """
+        Obtiene el cliente LLM con fallback automático si hay workspace_id configurado.
+
+        Returns:
+            Cliente LLM o None si no hay disponibles
+        """
+        if not self.workspace_id:
+            return self.llm_client
+
+        try:
+            llm_service, credentials, model_info = await get_llm_service_with_fallback(
+                workspace_id=self.workspace_id,
+                role="default"
+            )
+
+            if not model_info:
+                logger.warning(f"No hay modelos LLM configurados para workspace {self.workspace_id}")
+                return None
+
+            return LLMServiceAdapter(
+                llm_service=llm_service,
+                provider=model_info['provider'],
+                model=model_info['model'],
+                credentials=credentials
+            )
+        except Exception as e:
+            logger.error(f"Error obteniendo cliente LLM con fallback: {e}")
+            return self.llm_client
     
     async def get_llm_explanation(self, log_entry: str, score: float) -> str:
         """
         Obtiene una explicación inteligente del LLM para un log anómalo.
-        
+
         Args:
             log_entry: Entrada de log
             score: Score de anomalía
-            
+
         Returns:
             Explicación generada
         """
         try:
             logger.debug(f"Generando explicación para log: {log_entry[:100]}...")
-            
+
             # 1. Parsear el log (responsabilidad delegada)
             log_metadata = self.log_parser.parse(log_entry)
-            
+
             # 2. Construir el prompt (responsabilidad delegada)
             prompt = self.prompt_builder.build_single_prompt(log_metadata, score)
             system_prompt = self.prompt_builder.get_system_prompt()
-            
+
             logger.debug("Prompt construido, llamando al LLM")
-            
-            # 3. Llamar al LLM (responsabilidad delegada)
-            if self.llm_client:
+
+            # 3. Obtener cliente LLM con fallback si hay workspace configurado
+            llm_client = await self._get_llm_client_with_fallback()
+
+            # 4. Llamar al LLM (responsabilidad delegada)
+            if llm_client:
                 try:
-                    response = await self.llm_client.generate_response(
+                    response = await llm_client.generate_response(
                         prompt=prompt,
                         system_prompt=system_prompt,
                         temperature=self.temperature,
                         max_tokens=self.max_tokens
                     )
-                    
-                    # 4. Limpiar la respuesta (responsabilidad delegada)
+
+                    # 5. Limpiar la respuesta (responsabilidad delegada)
                     cleaned_response = self.response_parser.clean_response(response)
-                    
+
                     if cleaned_response:
                         logger.info(f"Explicación generada por LLM: {cleaned_response[:100]}...")
                         return cleaned_response
                 except Exception as e:
                     logger.error(f"Error llamando al LLM: {e}")
-            
-            # 5. Fallback si el LLM falla (responsabilidad delegada)
+
+            # 6. Fallback si el LLM falla (responsabilidad delegada)
             logger.warning("Usando explicación de fallback")
             return self.fallback_generator.generate(log_entry, score)
-            
+
         except Exception as e:
             logger.error(f"Error obteniendo explicación del LLM: {e}")
             return self.fallback_generator.generate(log_entry, score)
@@ -200,18 +245,63 @@ class ExplanationService:
     async def check_llm_available(self) -> bool:
         """
         Verifica si el LLM está disponible.
-        
+
         Returns:
             True si está disponible, False en caso contrario
         """
         if not self.llm_client:
             return False
-        
+
         try:
             return await self.llm_client.check_available()
         except Exception as e:
             logger.error(f"Error verificando disponibilidad del LLM: {e}")
             return False
+
+    def set_llm_provider(
+        self,
+        provider: LLMProvider,
+        model: Optional[str] = None,
+        credentials: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Cambia el proveedor LLM dinámicamente.
+
+        Args:
+            provider: Nuevo proveedor LLM
+            model: Modelo específico a usar (opcional)
+            credentials: Credenciales dinámicas (opcional)
+        """
+        try:
+            llm_service = get_llm_service(provider)
+
+            # Obtener credenciales del proveedor específico si se proporcionan
+            provider_creds = None
+            if credentials and provider.value in credentials:
+                provider_creds = credentials[provider.value]
+
+            # Crear adaptador para compatibilidad con LLMClientInterface
+            self.llm_client = LLMServiceAdapter(
+                llm_service=llm_service,
+                provider=provider.value,
+                model=model,
+                credentials=provider_creds
+            )
+
+            logger.info(f"Proveedor LLM cambiado a {provider.value} (modelo: {model or 'default'})")
+        except Exception as e:
+            logger.error(f"Error cambiando proveedor LLM: {e}")
+            raise
+
+    def set_workspace_id(self, workspace_id: str):
+        """
+        Establece el workspace_id para usar configuración con fallback.
+
+        Args:
+            workspace_id: ID del workspace
+        """
+        self.workspace_id = workspace_id
+        logger.info(f"Workspace ID establecido: {workspace_id}")
 
 
 # Instancia global del servicio (se inicializa con valores por defecto)

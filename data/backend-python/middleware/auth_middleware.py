@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from services.auth_service import decode_token, get_user_by_id
+from services.permission_service import get_user_workspaces
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +19,11 @@ security = HTTPBearer(auto_error=False)
 
 class CurrentUser:
     """Clase para almacenar información del usuario actual"""
-    def __init__(self, user_id: UUID, username: str, is_super_admin: bool):
+    def __init__(self, user_id: UUID, username: str, is_super_admin: bool, workspace_id: Optional[UUID] = None):
         self.user_id = user_id
         self.username = username
         self.is_super_admin = is_super_admin
+        self.workspace_id = workspace_id
 
 
 async def _get_token_from_request(request: Request) -> Optional[str]:
@@ -71,10 +73,28 @@ async def _validate_token(token: str) -> CurrentUser:
             detail="Usuario no encontrado o inactivo",
         )
 
+    # Obtener el primer workspace accesible del usuario
+    workspace_id = None
+    try:
+        user_workspaces = await get_user_workspaces(user_id)
+        if user_workspaces and len(user_workspaces) > 0:
+            # Usar el primer workspace accesible
+            # Convertir a string si es UUID de PostgreSQL
+            ws_id = user_workspaces[0]["workspace_id"]
+            if hasattr(ws_id, 'hex'):
+                # Es UUID de PostgreSQL (asyncpg)
+                workspace_id = UUID(str(ws_id))
+            else:
+                # Es string o UUID de Python
+                workspace_id = UUID(ws_id) if not isinstance(ws_id, UUID) else ws_id
+    except Exception as e:
+        logger.warning(f"No se pudo obtener workspace del usuario: {e}")
+
     return CurrentUser(
         user_id=user_id,
         username=payload.get("username", user["username"]),
-        is_super_admin=bool(payload.get("is_super_admin", user["is_super_admin"]))
+        is_super_admin=bool(payload.get("is_super_admin", user["is_super_admin"])),
+        workspace_id=workspace_id
     )
 
 

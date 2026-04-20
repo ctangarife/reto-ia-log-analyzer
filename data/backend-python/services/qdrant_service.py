@@ -220,33 +220,35 @@ async def find_similar_normal_logs(
     log_entry: str,
     limit: int = 5,
     min_score: float = 0.3,
-    job_id: Optional[str] = None
+    job_id: Optional[str] = None,
+    global_search: bool = True
 ) -> List[Dict]:
     """
     Encuentra logs normales similares a un log dado.
-    Útil para comparación educativa: mostrar qué es normal vs anómalo.
-    
+
     Args:
         log_entry: Texto del log a comparar
         limit: Número máximo de resultados
         min_score: Score mínimo de similitud (0-1)
-        job_id: Filtrar por job_id específico (opcional)
-    
+        job_id: Filtrar por job_id específico (solo si global_search=False)
+        global_search: Si True, busca en TODOS los jobs (acumulativo)
+
     Returns:
         Lista de logs normales similares con sus scores de similitud
     """
     qdrant = get_qdrant_client()
-    
+
     try:
         # Generar embedding para el log de consulta
         query_embedding = generate_embeddings([log_entry])[0]
-        
+
         if len(query_embedding) != VECTOR_SIZE:
             raise ValueError(f"Embedding de consulta tiene tamaño incorrecto: {len(query_embedding)} (esperado: {VECTOR_SIZE})")
-        
-        # Construir filtro si se especifica job_id
+
+        # Construir filtro: búsqueda global vs específica por job
         query_filter = None
-        if job_id:
+        if not global_search and job_id:
+            # Búsqueda específica del job (comportamiento actual)
             query_filter = Filter(
                 must=[
                     FieldCondition(
@@ -255,7 +257,8 @@ async def find_similar_normal_logs(
                     )
                 ]
             )
-        
+        # Si global_search=True, no hay filtro (busca en TODOS los jobs)
+
         # Buscar logs similares
         results = qdrant.search(
             collection_name=COLLECTION_NORMAL_LOGS,
@@ -264,7 +267,7 @@ async def find_similar_normal_logs(
             limit=limit,
             score_threshold=min_score
         )
-        
+
         # Formatear resultados
         similar_logs = []
         for result in results:
@@ -273,13 +276,14 @@ async def find_similar_normal_logs(
                 "similarity_score": float(result.score),
                 "job_id": result.payload.get("job_id", ""),
                 "log_index": result.payload.get("log_index", 0),
-                "metadata": {k: v for k, v in result.payload.items() 
+                "metadata": {k: v for k, v in result.payload.items()
                            if k not in ["log_entry", "job_id", "log_index"]}
             })
-        
-        logger.info(f"Encontrados {len(similar_logs)} logs normales similares (score mínimo: {min_score})")
+
+        search_type = "GLOBAL" if global_search else f"JOB ({job_id})"
+        logger.info(f"Encontrados {len(similar_logs)} logs normales similares ({search_type}, score mínimo: {min_score})")
         return similar_logs
-        
+
     except Exception as e:
         logger.error(f"Error al buscar logs similares en Qdrant: {e}", exc_info=True)
         raise

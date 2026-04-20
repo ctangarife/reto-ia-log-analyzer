@@ -3,7 +3,7 @@
 # ============================================================================
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-pydantic==2.5.0
+pydantic>=2.5.0
 email-validator==2.1.0  # Requerido para EmailStr en modelos RBAC
 python-multipart==0.0.6
 
@@ -43,12 +43,17 @@ fastembed>=0.2.0  # Alternativa ligera a sentence-transformers (~50MB vs ~2GB)
 ollama-client-lib>=1.0.0
 
 # ============================================================================
+# LLM - Z.ai (GLM Models)
+# ============================================================================
+zai-sdk==0.2.2
+
+# ============================================================================
 # HTTP Clients
 # ============================================================================
 # requests usado en endpoints V1 legacy
 requests==2.31.0
 # httpx usado por ollama-client-lib internamente
-httpx==0.25.0
+httpx==0.28.1
 
 # ============================================================================
 # Utilities

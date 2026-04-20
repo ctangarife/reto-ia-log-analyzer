@@ -10,6 +10,7 @@ const AnalysisDetailView = () => import('../views/AnalysisDetailView.vue')
 const HistoryView = () => import('../views/HistoryView.vue')
 const LearningView = () => import('../views/LearningView.vue')
 const AdminView = () => import('../views/AdminView.vue')
+const LLMModelSelection = () => import('../components/LLMModelSelection.vue')
 
 const routes: RouteRecordRaw[] = [
   // Rutas públicas (SIN AppLayout)
@@ -60,6 +61,11 @@ const routes: RouteRecordRaw[] = [
         path: 'learning',
         name: 'learning',
         component: LearningView
+      },
+      {
+        path: 'llm-models',
+        name: 'llm-models',
+        component: LLMModelSelection
       },
       {
         path: 'admin',

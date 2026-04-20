@@ -53,7 +53,7 @@ class ProcessingStat(OrmBase):
         PG_UUID(as_uuid=True), primary_key=True, server_default=text("uuid_generate_v4()")
     )
     job_id: Mapped[Any] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("processing_jobs.id"), nullable=False
+        PG_UUID(as_uuid=True), ForeignKey("processing.processing_jobs.id"), nullable=False
     )
     chunk_number: Mapped[int] = mapped_column(Integer, nullable=False)
     processing_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
@@ -68,8 +68,8 @@ class Configuration(OrmBase):
     """processing.configurations - Configuración del modelo de anomalías."""
     __tablename__ = "configurations"
     __table_args__ = (
-        {"schema": "processing"},
         Index("idx_config_active", "is_active"),
+        {"schema": "processing"}
     )
 
     id: Mapped[Any] = mapped_column(
@@ -96,10 +96,10 @@ class User(OrmBase):
     """auth.users - Usuarios del sistema."""
     __tablename__ = "users"
     __table_args__ = (
-        {"schema": "auth"},
         Index("idx_users_email", "email"),
         Index("idx_users_username", "username"),
         Index("idx_users_active", "is_active"),
+        {"schema": "auth"}
     )
 
     id: Mapped[Any] = mapped_column(
@@ -123,10 +123,10 @@ class User(OrmBase):
         "Project", back_populates="created_by_user", foreign_keys="Project.created_by"
     )
     user_workspace_roles: Mapped[List["UserWorkspaceRole"]] = relationship(
-        "UserWorkspaceRole", back_populates="user"
+        "UserWorkspaceRole", back_populates="user", foreign_keys="[UserWorkspaceRole.user_id]"
     )
     user_project_roles: Mapped[List["UserProjectRole"]] = relationship(
-        "UserProjectRole", back_populates="user"
+        "UserProjectRole", back_populates="user", foreign_keys="[UserProjectRole.user_id]"
     )
 
 
@@ -172,8 +172,8 @@ class Permission(OrmBase):
     """auth.permissions - Acciones por módulo."""
     __tablename__ = "permissions"
     __table_args__ = (
-        {"schema": "auth"},
         UniqueConstraint("module_id", "action", name="uq_permissions_module_action"),
+        {"schema": "auth"}
     )
 
     id: Mapped[Any] = mapped_column(
@@ -221,8 +221,8 @@ class RolePermission(OrmBase):
     """auth.role_permissions - Relación roles -> permisos."""
     __tablename__ = "role_permissions"
     __table_args__ = (
-        {"schema": "auth"},
         UniqueConstraint("role_id", "permission_id", name="uq_role_permissions_role_permission"),
+        {"schema": "auth"}
     )
 
     id: Mapped[Any] = mapped_column(
@@ -249,9 +249,9 @@ class Workspace(OrmBase):
     """auth.workspaces - Espacios de trabajo."""
     __tablename__ = "workspaces"
     __table_args__ = (
-        {"schema": "auth"},
         Index("idx_workspaces_slug", "slug"),
         Index("idx_workspaces_active", "is_active"),
+        {"schema": "auth"}
     )
 
     id: Mapped[Any] = mapped_column(
@@ -280,10 +280,10 @@ class Project(OrmBase):
     """auth.projects - Proyectos (hijos de workspaces)."""
     __tablename__ = "projects"
     __table_args__ = (
-        {"schema": "auth"},
         Index("idx_projects_workspace", "workspace_id"),
         Index("idx_projects_slug", "slug"),
         Index("idx_projects_active", "is_active"),
+        {"schema": "auth"}
     )
 
     id: Mapped[Any] = mapped_column(
@@ -315,10 +315,10 @@ class UserWorkspaceRole(OrmBase):
     """auth.user_workspace_roles - Asignación usuario -> workspace -> rol."""
     __tablename__ = "user_workspace_roles"
     __table_args__ = (
-        {"schema": "auth"},
         UniqueConstraint("user_id", "workspace_id", "role_id", name="uq_user_workspace_roles"),
         Index("idx_user_workspace_roles_user", "user_id"),
         Index("idx_user_workspace_roles_workspace", "workspace_id"),
+        {"schema": "auth"}
     )
 
     id: Mapped[Any] = mapped_column(
@@ -338,7 +338,8 @@ class UserWorkspaceRole(OrmBase):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    user: Mapped["User"] = relationship("User", back_populates="user_workspace_roles")
+    user: Mapped["User"] = relationship("User", back_populates="user_workspace_roles", foreign_keys=[user_id])
+    assigned_by_user: Mapped[Optional["User"]] = relationship("User", foreign_keys=[assigned_by])
     workspace: Mapped["Workspace"] = relationship("Workspace", back_populates="user_workspace_roles")
     role: Mapped["Role"] = relationship("Role", back_populates="user_workspace_roles")
 
@@ -347,10 +348,10 @@ class UserProjectRole(OrmBase):
     """auth.user_project_roles - Asignación usuario -> proyecto -> rol."""
     __tablename__ = "user_project_roles"
     __table_args__ = (
-        {"schema": "auth"},
         UniqueConstraint("user_id", "project_id", "role_id", name="uq_user_project_roles"),
         Index("idx_user_project_roles_user", "user_id"),
         Index("idx_user_project_roles_project", "project_id"),
+        {"schema": "auth"}
     )
 
     id: Mapped[Any] = mapped_column(
@@ -370,6 +371,37 @@ class UserProjectRole(OrmBase):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
-    user: Mapped["User"] = relationship("User", back_populates="user_project_roles")
+    user: Mapped["User"] = relationship("User", back_populates="user_project_roles", foreign_keys=[user_id])
+    assigned_by_user: Mapped[Optional["User"]] = relationship("User", foreign_keys=[assigned_by])
     project: Mapped["Project"] = relationship("Project", back_populates="user_project_roles")
     role: Mapped["Role"] = relationship("Role", back_populates="user_project_roles")
+
+
+class WorkspaceLLMConfig(OrmBase):
+    """auth.workspace_llm_configs - Configuraciones LLM de workspaces."""
+    __tablename__ = "workspace_llm_configs"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "provider", "model_role", name="uq_workspace_llm_configs_role"),
+        Index("idx_workspace_llm_configs_workspace", "workspace_id"),
+        Index("idx_workspace_llm_configs_provider", "provider"),
+        Index("idx_workspace_llm_configs_role", "model_role"),
+        {"schema": "auth"}
+    )
+
+    id: Mapped[Any] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=text("uuid_generate_v4()")
+    )
+    workspace_id: Mapped[Any] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("auth.workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)  # ollama, zai, minimax
+    api_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # Encriptado
+    api_endpoint: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    model_role: Mapped[str] = mapped_column(String(20), default="default", nullable=False)  # default, fallback, evaluator
+    priority: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # Para orden de fallback
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    workspace: Mapped["Workspace"] = relationship("Workspace")

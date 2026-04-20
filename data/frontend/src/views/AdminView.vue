@@ -26,6 +26,14 @@
         <i class="pi pi-users"></i>
         Usuarios
       </button>
+      <button
+        class="admin-tab"
+        :class="{ active: adminTab === 'llm' }"
+        @click="adminTab = 'llm'"
+      >
+        <i class="pi pi-cog"></i>
+        Config LLM
+      </button>
     </div>
 
     <!-- Admin content -->
@@ -33,6 +41,7 @@
       <WorkspaceManagement v-if="adminTab === 'workspaces'" />
       <ProjectManagement v-else-if="adminTab === 'projects'" />
       <UserManagement v-else-if="adminTab === 'users'" />
+      <LLMConfig v-else-if="adminTab === 'llm'" />
     </div>
   </div>
 </template>
@@ -42,8 +51,9 @@ import { ref } from 'vue'
 import WorkspaceManagement from '../components/WorkspaceManagement.vue'
 import ProjectManagement from '../components/ProjectManagement.vue'
 import UserManagement from '../components/UserManagement.vue'
+import LLMConfig from '../components/LLMConfig.vue'
 
-const adminTab = ref<'workspaces' | 'projects' | 'users'>('workspaces')
+const adminTab = ref<'workspaces' | 'projects' | 'users' | 'llm'>('workspaces')
 </script>
 
 <style scoped>

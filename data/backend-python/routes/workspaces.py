@@ -66,8 +66,8 @@ async def list_workspaces(
                 "description": w.get("description"),
                 "is_active": w["is_active"],
                 "role": w.get("role", ""),
-                "created_at": w["created_at"].isoformat() if w.get("created_at") else None,
-                "updated_at": w["updated_at"].isoformat() if w.get("updated_at") else None,
+                "created_at": w.get("created_at"),  # Ya viene como ISO string del servicio
+                "updated_at": w.get("updated_at"),  # Ya viene como ISO string del servicio
             }
             for w in items
         ]
