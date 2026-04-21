@@ -168,11 +168,17 @@ async def generate_course(
             project_id, workspace_id, current_user.user_id, data.scope, data.name
         )
 
+        logger.info(f"Course generation result: course_id={result.course_id}, status={result.status}, "
+                   f"modules_created={result.modules_created}, lessons_created={result.lessons_created}, "
+                   f"message={result.message}")
+
         return result
 
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        logger.error(f"Error in generate_course: {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

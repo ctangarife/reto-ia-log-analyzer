@@ -29,6 +29,72 @@
             </div>
           </div>
 
+          <!-- Tipo de Log Detectado -->
+          <div v-if="previewData.analysis.log_type_info" class="mt-4 log-type-section">
+            <h4>
+              <i class="pi pi-file-text mr-2"></i>
+              Tipo de Log Detectado
+            </h4>
+            <div class="log-type-card">
+              <div class="log-type-item">
+                <span class="log-type-label">Formato:</span>
+                <Tag :value="previewData.analysis.log_type_info.format_type" severity="info" />
+              </div>
+              <div v-if="previewData.analysis.log_type_info.timestamp_format" class="log-type-item">
+                <span class="log-type-label">Timestamp:</span>
+                <span class="log-type-value">{{ previewData.analysis.log_type_info.timestamp_format }}</span>
+              </div>
+              <div v-if="previewData.analysis.log_type_info.typical_fields?.length > 0" class="log-type-item">
+                <span class="log-type-label">Campos detectados:</span>
+                <div class="log-fields">
+                  <Tag v-for="field in previewData.analysis.log_type_info.typical_fields.slice(0, 8)"
+                        :key="field"
+                        :label="field"
+                        severity="secondary"
+                        class="mr-1 mb-1" />
+                  <span v-if="previewData.analysis.log_type_info.typical_fields.length > 8"
+                        class="text-color-secondary text-sm">
+                    +{{ previewData.analysis.log_type_info.typical_fields.length - 8 }} más
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Fuentes de Log -->
+          <div v-if="previewData.analysis.log_sources?.length > 0" class="mt-4">
+            <h4>
+              <i class="pi pi-sitemap mr-2"></i>
+              Fuentes de Log Detectadas
+            </h4>
+            <div class="log-sources-grid">
+              <div v-for="source in previewData.analysis.log_sources.slice(0, 4)"
+                    :key="source.service_name"
+                    class="log-source-card">
+                <div class="log-source-name">{{ source.service_name }}</div>
+                <div class="log-source-count">{{ source.log_count }} entradas</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Información adicional -->
+          <div v-if="previewData.analysis.predominant_log_level || previewData.analysis.anomaly_density > 0"
+               class="mt-4 grid">
+            <div v-if="previewData.analysis.predominant_log_level" class="col-6">
+              <div class="stat-box mini">
+                <span class="stat-label">Nivel Predominante</span>
+                <Tag :value="previewData.analysis.predominant_log_level"
+                     :severity="getLogLevelSeverity(previewData.analysis.predominant_log_level)" />
+              </div>
+            </div>
+            <div v-if="previewData.analysis.anomaly_density > 0" class="col-6">
+              <div class="stat-box mini">
+                <span class="stat-label">Densidad de Anomalías</span>
+                <span class="stat-value">{{ previewData.analysis.anomaly_density }}%</span>
+              </div>
+            </div>
+          </div>
+
           <div class="mt-4">
             <h4>Categorías de Anomalías</h4>
             <Chip v-for="(count, category) in previewData.analysis.anomaly_categories"
@@ -142,6 +208,7 @@ import Dropdown from 'primevue/dropdown'
 import ProgressSpinner from 'primevue/progressspinner'
 import InlineMessage from 'primevue/inlinemessage'
 import Chip from 'primevue/chip'
+import Tag from 'primevue/tag'
 
 import { courseGenerationService, type CourseGenerateRequest } from '@/services/courseGenerationService'
 
@@ -226,6 +293,14 @@ const close = () => {
   showDialog.value = false
 }
 
+const getLogLevelSeverity = (level: string) => {
+  const levelUpper = level.toUpperCase()
+  if (levelUpper === 'ERROR' || levelUpper === 'CRITICAL' || levelUpper === 'FATAL') return 'danger'
+  if (levelUpper === 'WARN' || levelUpper === 'WARNING') return 'warning'
+  if (levelUpper === 'DEBUG' || levelUpper === 'TRACE') return 'secondary'
+  return 'info' // INFO, default
+}
+
 defineExpose({
   open
 })
@@ -241,6 +316,10 @@ defineExpose({
   padding: 1rem;
   background: var(--surface-100);
   border-radius: 8px;
+}
+
+.stat-box.mini {
+  padding: 0.75rem;
 }
 
 .stat-box.inline-block {
@@ -262,6 +341,77 @@ defineExpose({
   color: var(--primary-color);
 }
 
+.stat-box.mini .stat-value {
+  font-size: 1.25rem;
+}
+
+/* Log Type Section */
+.log-type-section {
+  padding: 1rem;
+  background: var(--surface-50);
+  border-radius: 8px;
+  border-left: 4px solid var(--primary-color);
+}
+
+.log-type-card {
+  background: var(--surface-0);
+  padding: 1rem;
+  border-radius: 6px;
+  margin-top: 0.5rem;
+}
+
+.log-type-item {
+  display: flex;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.log-type-item:last-child {
+  margin-bottom: 0;
+}
+
+.log-type-label {
+  font-weight: 500;
+  min-width: 120px;
+  color: var(--text-color-secondary);
+}
+
+.log-type-value {
+  color: var(--text-color);
+}
+
+.log-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+/* Log Sources Grid */
+.log-sources-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.75rem;
+}
+
+.log-source-card {
+  background: var(--surface-0);
+  padding: 0.75rem;
+  border-radius: 6px;
+  text-align: center;
+  border: 1px solid var(--surface-200);
+}
+
+.log-source-name {
+  font-weight: 500;
+  color: var(--text-color);
+  margin-bottom: 0.25rem;
+}
+
+.log-source-count {
+  font-size: 0.875rem;
+  color: var(--text-color-secondary);
+}
+
 .formgroup {
   margin-bottom: 1rem;
 }
@@ -274,5 +424,21 @@ defineExpose({
 
 .text-color-secondary {
   color: var(--text-color-secondary);
+}
+
+.mr-1 {
+  margin-right: 0.25rem;
+}
+
+.mr-2 {
+  margin-right: 0.5rem;
+}
+
+.mb-1 {
+  margin-bottom: 0.25rem;
+}
+
+.mr-2 {
+  margin-right: 0.5rem;
 }
 </style>

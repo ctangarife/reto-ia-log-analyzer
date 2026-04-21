@@ -325,12 +325,39 @@ class CourseGenerateResponse(BaseModel):
     lessons_created: int
     message: str
 
+    class Config:
+        from_attributes = True
+        json_encoders = {
+            UUID: str
+        }
+
 
 class CourseLimitsCheck(BaseModel):
     """Response from course limits validation"""
     can_create: bool
     reason: Optional[str] = None
     current_counts: dict
+
+
+class LogTypeInfo(BaseModel):
+    """Detailed information about log types in the project"""
+    format_type: str  # JSON, Apache/Nginx, Syslog, Custom, etc.
+    timestamp_format: Optional[str] = None  # ISO8601, Unix timestamp, etc.
+    has_structured_data: bool = False
+    typical_fields: list[str] = []
+    sample_entries: list[str] = []
+    # NEW: Source identification
+    detected_sources: list[str] = []  # ["Apache", "OPNsense", "Android", etc.]
+    primary_source: Optional[str] = None  # Main source detected
+    confidence: str = "medium"  # low, medium, high
+
+
+class LogSourceInfo(BaseModel):
+    """Information about log sources/services"""
+    service_name: str
+    log_count: int
+    anomaly_count: int
+    example_entries: list[str] = []
 
 
 class ProjectAnalysis(BaseModel):
@@ -342,6 +369,10 @@ class ProjectAnalysis(BaseModel):
     anomaly_categories: dict[str, int]
     anomaly_severity_distribution: dict[str, int]
     log_formats: list[str]
+    log_type_info: Optional[LogTypeInfo] = None  # NEW: Detailed log type info
+    log_sources: list[LogSourceInfo] = []  # NEW: Sources of logs
+    anomaly_density: float = 0.0  # NEW: % of logs that are anomalies
+    predominant_log_level: Optional[str] = None  # NEW: INFO, ERROR, WARNING, etc.
     date_range: dict[str, str]
     can_generate_course: bool
     min_anomalies_required: int
@@ -545,6 +576,12 @@ class CourseRegenerateResponse(BaseModel):
     modules_created: int
     lessons_created: int
     message: str
+
+    class Config:
+        from_attributes = True
+        json_encoders = {
+            UUID: str
+        }
 
 
 class LessonRefreshRequest(BaseModel):

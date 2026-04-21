@@ -33,6 +33,21 @@ export interface CourseLimitsCheck {
   }
 }
 
+export interface LogTypeInfo {
+  format_type: string
+  timestamp_format?: string
+  has_structured_data: boolean
+  typical_fields: string[]
+  sample_entries: string[]
+}
+
+export interface LogSourceInfo {
+  service_name: string
+  log_count: number
+  anomaly_count: number
+  example_entries: string[]
+}
+
 export interface ProjectAnalysis {
   project_id: string
   project_name: string
@@ -41,6 +56,10 @@ export interface ProjectAnalysis {
   anomaly_categories: Record<string, number>
   anomaly_severity_distribution: Record<string, number>
   log_formats: string[]
+  log_type_info?: LogTypeInfo
+  log_sources: LogSourceInfo[]
+  anomaly_density: number
+  predominant_log_level?: string
   date_range: { start: string; end: string }
   can_generate_course: boolean
   min_anomalies_required: number

@@ -18,14 +18,15 @@ import json
 import random
 import re
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 from uuid import UUID, uuid4
 
 from config.database import db_manager
 from models.learning_models import (
     Course, ProjectAnalysis,
     CourseGenerateResponse, CoursePreviewResponse,
-    CourseRegenerateResponse, CourseLimitsCheck
+    CourseRegenerateResponse, CourseLimitsCheck,
+    LogTypeInfo, LogSourceInfo
 )
 from .llm import OllamaClientWrapper
 
@@ -167,7 +168,8 @@ class CourseGenerationService:
                     """SELECT
                         COUNT(DISTINCT j.id) as completed_jobs,
                         MIN(j.started_at) as first_job,
-                        MAX(j.completed_at) as last_job
+                        MAX(j.completed_at) as last_job,
+                        SUM(j.total_chunks) as total_chunks
                        FROM processing.processing_jobs j
                        WHERE j.status = 'completed'
                        AND (j.project_id = $1 OR j.project_id IS NULL)""",
@@ -177,8 +179,39 @@ class CourseGenerationService:
                 # Get anomalies from MongoDB
                 anomalies_data = await self._get_anomalies_analysis(conn, project_id)
 
-                # Get log formats
+                # Get detailed log type information
+                sample_logs = await self._get_sample_log_entries(conn, project_id, limit=20)
+                log_type_info = self._analyze_log_type_detailed(sample_logs)
+
+                # Detect log sources (Apache, OPNsense, Android, etc.)
+                source_detection = self._detect_log_sources(sample_logs)
+
+                # Update log_type_info with source detection
+                log_type_info.detected_sources = source_detection.get("detected_sources", [])
+                log_type_info.primary_source = source_detection.get("primary_source")
+                log_type_info.confidence = source_detection.get("confidence", "low")
+
+                # Get log sources (services/components) - legacy method for specific service names
+                log_sources = await self._identify_log_sources(conn, project_id, sample_logs)
+
+                # Get log formats (legacy)
                 log_formats = await self._get_log_formats(conn, project_id)
+
+                # Calculate anomaly density
+                # Porcentaje de chunks que contienen al menos una anomalía
+                # Nota: No podemos calcular exactamente sin procesar todos los chunks
+                total_chunks = stats["total_chunks"] if stats and stats["total_chunks"] else 1
+
+                if anomalies_data["total"] > 0 and total_chunks > 0:
+                    # Estimar: si hay X anomalías distribuidas en Y chunks
+                    # Asumimos una anomalía por chunk como máximo para el cálculo
+                    estimated_chunks_with_anomalies = min(anomalies_data["total"], total_chunks)
+                    anomaly_density = round((estimated_chunks_with_anomalies / total_chunks) * 100, 1)
+                else:
+                    anomaly_density = 0.0
+
+                # Get predominant log level
+                predominant_log_level = self._get_predominant_log_level(sample_logs)
 
                 total_anomalies = anomalies_data["total"]
 
@@ -190,6 +223,10 @@ class CourseGenerationService:
                     anomaly_categories=anomalies_data["categories"],
                     anomaly_severity_distribution=anomalies_data["severity"],
                     log_formats=log_formats,
+                    log_type_info=log_type_info,
+                    log_sources=log_sources,
+                    anomaly_density=round(anomaly_density, 2),
+                    predominant_log_level=predominant_log_level,
                     date_range={
                         "start": str(stats["first_job"]) if stats and stats["first_job"] else "N/A",
                         "end": str(stats["last_job"]) if stats and stats["last_job"] else "N/A"
@@ -213,9 +250,12 @@ class CourseGenerationService:
     ) -> CourseGenerateResponse:
         """Generate a new course based on project analysis"""
         try:
+            logger.info(f"Starting course generation for project_id={project_id}, workspace_id={workspace_id}, created_by={created_by}, scope={scope}, name={name}")
+
             # Check if course can be generated
             check = await self.can_generate_course(project_id)
             if not check.get("can_generate"):
+                logger.warning(f"Cannot generate course for project {project_id}: {check.get('reason')}")
                 return CourseGenerateResponse(
                     course_id=uuid4(),
                     status="error",
@@ -227,9 +267,11 @@ class CourseGenerationService:
             async with db_manager.postgres_pool.acquire() as conn:
                 # Analyze project data
                 analysis = await self.preview_course_data(project_id)
+                logger.info(f"Project analysis complete: total_anomalies={analysis.total_anomalies}, total_logs={analysis.total_logs}")
 
                 # Get sample log entries from the project
                 sample_logs = await self._get_sample_log_entries(conn, project_id, limit=5)
+                logger.info(f"Retrieved {len(sample_logs)} sample logs")
 
                 # Create course name if not provided
                 course_name = name or f"Curso de Análisis de Logs - {analysis.project_name}"
@@ -250,41 +292,52 @@ class CourseGenerationService:
                 total_lessons = 0
 
                 # Module 1: Introducción a los Logs
+                logger.info(f"Creating Module 1 for course {course_id}")
                 lessons_m1 = await self._create_module_1_introduction(
                     conn, course_id, analysis, sample_logs, module_order=1
                 )
                 total_lessons += lessons_m1
+                logger.info(f"Module 1 created with {lessons_m1} lessons")
 
                 # Module 2: Tipos de Anomalías Detectadas
+                logger.info(f"Creating Module 2 for course {course_id}")
                 lessons_m2 = await self._create_module_2_categories(
                     conn, course_id, analysis, module_order=2
                 )
                 total_lessons += lessons_m2
+                logger.info(f"Module 2 created with {lessons_m2} lessons")
 
                 # Module 3: Análisis Práctico
+                logger.info(f"Creating Module 3 for course {course_id}")
                 lessons_m3 = await self._create_module_3_practical(
                     conn, course_id, project_id, module_order=3
                 )
                 total_lessons += lessons_m3
+                logger.info(f"Module 3 created with {lessons_m3} lessons")
 
                 # Module 4: Evaluación Final
+                logger.info(f"Creating Module 4 for course {course_id}")
                 lessons_m4 = await self._create_module_4_evaluation(
                     conn, course_id, project_id, module_order=4
                 )
                 total_lessons += lessons_m4
+                logger.info(f"Module 4 created with {lessons_m4} lessons")
 
-                logger.info(f"Course {course_id} generated with {total_lessons} lessons")
+                logger.info(f"Course {course_id} generated with {total_lessons} lessons total")
 
-                return CourseGenerateResponse(
+                response = CourseGenerateResponse(
                     course_id=course_id,
                     status="draft",
                     modules_created=4,
                     lessons_created=total_lessons,
                     message=f"Curso generado exitosamente con {total_lessons} lecciones en 4 módulos."
                 )
+                logger.info(f"Returning response: course_id={response.course_id}, status={response.status}, modules_created={response.modules_created}, lessons_created={response.lessons_created}, message={response.message}")
+                return response
 
         except Exception as e:
-            logger.error(f"Error generating course: {e}")
+            import traceback
+            logger.error(f"Error generating course: {e}\n{traceback.format_exc()}")
             raise
 
     async def regenerate_course(
@@ -357,6 +410,31 @@ class CourseGenerationService:
 
         # Lesson 1: ¿Qué es un Log?
         sample_log_text = "\n".join([f"```\n{log}\n```" for log in sample_logs[:3]])
+
+        # Build log type information section
+        log_type_section = ""
+        if analysis.log_type_info:
+            log_type_section = f"""
+## Tipo de Log Detectado
+
+**Formato**: {analysis.log_type_info.format_type}
+"""
+            if analysis.log_type_info.timestamp_format:
+                log_type_section += f"\n**Formato de Timestamp**: {analysis.log_type_info.timestamp_format}"
+            if analysis.log_type_info.typical_fields:
+                log_type_section += f"\n**Campos Típicos**: {', '.join(analysis.log_type_info.typical_fields[:5])}"
+            if analysis.anomaly_density > 0:
+                log_type_section += f"\n**Densidad de Anomalías**: {analysis.anomaly_density:.1f}% de los logs contienen anomalías"
+            if analysis.predominant_log_level:
+                log_type_section += f"\n**Nivel de Log Predominante**: {analysis.predominant_log_level}"
+
+        # Build log sources section
+        log_sources_section = ""
+        if analysis.log_sources:
+            log_sources_section = "\n## Fuentes de Log Detectadas\n\n"
+            for source in analysis.log_sources[:3]:
+                log_sources_section += f"- **{source.service_name}** ({source.log_count} entradas)\n"
+
         content_lesson_1 = f"""# ¿Qué es un Log?
 
 Un **log** (o registro) es un archivo generado por sistemas informáticos que registra eventos y actividades que ocurren durante su funcionamiento. Los logs son fundamentales para:
@@ -375,15 +453,16 @@ Los logs pueden venir en diferentes formatos:
 - **Logs de Red**: De firewalls, routers, switches
 - **Logs de Seguridad**: De sistemas de autenticación y control de acceso
 
+## Análisis de tu Proyecto
+
+Tu proyecto ha generado **{analysis.total_logs}** entradas de log con **{analysis.total_anomalies} anomalías detectadas**.
+{log_type_section}
+{log_sources_section}
 ## Ejemplos de Logs de tu Proyecto
 
-Tu proyecto ha generado {analysis.total_logs} entradas de log. Aquí tienes algunos ejemplos:
+Aquí tienes algunos ejemplos reales:
 
 {sample_log_text}
-
-## Formato Detectado
-
-Los logs de tu proyecto están principalmente en formato: **{", ".join(analysis.log_formats)}**
 
 ## ¿Por Qué Analizar Logs?
 
@@ -759,28 +838,41 @@ Responde SOLO en formato JSON:
     async def _count_project_anomalies(self, conn, project_id: UUID) -> int:
         """Count total anomalies in project from MongoDB results collection"""
         try:
+            # Usar la MISMA query que _get_anomalies_analysis para consistencia
             job_ids = await conn.fetch(
                 """SELECT id FROM processing.processing_jobs
-                   WHERE (project_id = $1 OR project_id IS NULL) AND status = 'completed'""",
+                   WHERE status = 'completed'
+                   AND (project_id = $1 OR project_id IS NULL)""",
                 project_id
             )
 
             if not job_ids:
+                logger.warning(f"No completed jobs found for project {project_id}")
                 return 0
 
             file_ids = [str(job["id"]) for job in job_ids]
+            logger.info(f"Checking anomalies for project {project_id}, file_ids: {file_ids}")
 
+            # Pipeline simplificado sin conversión a ObjectId
+            # NOTA: chunk_id en results tiene formato "job_id_chunk_id"
+            # necesitamos extraer solo el chunk_id para el lookup
+            # Usar $group como en _get_anomalies_analysis para consistencia
             pipeline = [
                 {
                     "$addFields": {
-                        "chunk_object_id": {"$toObjectId": "$chunk_id"}
+                        "pure_chunk_id": {
+                            "$arrayElemAt": [
+                                {"$split": ["$chunk_id", "_"]},
+                                -1  # Tomar el último elemento después del último "_"
+                            ]
+                        }
                     }
                 },
                 {
                     "$lookup": {
                         "from": "chunks",
-                        "localField": "chunk_object_id",
-                        "foreignField": "_id",
+                        "localField": "pure_chunk_id",  # UUID sin prefijo
+                        "foreignField": "_id",           # UUID sin prefijo
                         "as": "chunk"
                     }
                 },
@@ -790,15 +882,22 @@ Responde SOLO en formato JSON:
                 {"$unwind": "$anomalies"},
                 {"$match": {"anomalies.is_anomaly": True}},
                 {
-                    "$count": "total"
+                    "$group": {
+                        "_id": None,
+                        "total": {"$sum": 1}
+                    }
                 }
             ]
 
+            # Execute the aggregation pipeline
             result = await db_manager.mongodb_db["results"].aggregate(pipeline).to_list(length=1)
-            return result[0]["total"] if result else 0
+            count = result[0]["total"] if result and len(result) > 0 else 0
+            logger.info(f"Anomalies count for project {project_id}: {count} (file_ids: {file_ids})")
+            return count
 
         except Exception as e:
-            logger.error(f"Error counting anomalies: {e}")
+            import traceback
+            logger.error(f"Error counting anomalies: {e}\n{traceback.format_exc()}")
             return 0
 
     async def _get_anomalies_analysis(self, conn, project_id: UUID) -> dict:
@@ -818,17 +917,23 @@ Responde SOLO en formato JSON:
 
             # Pipeline para obtener estadísticas SIN guardar documentos completos
             # Esto evita el límite de 16MB de BSON
+            # NOTA: chunk_id en results tiene formato "job_id_chunk_id"
             pipeline_stats = [
                 {
                     "$addFields": {
-                        "chunk_object_id": {"$toObjectId": "$chunk_id"}
+                        "pure_chunk_id": {
+                            "$arrayElemAt": [
+                                {"$split": ["$chunk_id", "_"]},
+                                -1  # Tomar el último elemento después del último "_"
+                            ]
+                        }
                     }
                 },
                 {
                     "$lookup": {
                         "from": "chunks",
-                        "localField": "chunk_object_id",
-                        "foreignField": "_id",
+                        "localField": "pure_chunk_id",  # UUID sin prefijo
+                        "foreignField": "_id",           # UUID sin prefijo
                         "as": "chunk"
                     }
                 },
@@ -859,14 +964,19 @@ Responde SOLO en formato JSON:
             pipeline_samples = [
                 {
                     "$addFields": {
-                        "chunk_object_id": {"$toObjectId": "$chunk_id"}
+                        "pure_chunk_id": {
+                            "$arrayElemAt": [
+                                {"$split": ["$chunk_id", "_"]},
+                                -1  # Tomar el último elemento después del último "_"
+                            ]
+                        }
                     }
                 },
                 {
                     "$lookup": {
                         "from": "chunks",
-                        "localField": "chunk_object_id",
-                        "foreignField": "_id",
+                        "localField": "pure_chunk_id",  # UUID sin prefijo
+                        "foreignField": "_id",           # UUID sin prefijo
                         "as": "chunk"
                     }
                 },
@@ -1010,18 +1120,24 @@ Responde SOLO en formato JSON:
                 file_ids = [str(job["id"]) for job in job_ids]
                 logger.info(f"Found {len(file_ids)} job_ids for project {project_id}: {file_ids[:3]}...")
 
-            # Pipeline: usar lookup con chunks para filtrar por file_id
+            # Pipeline simplificado para extraer chunk_id puro
+            # NOTA: chunk_id en results tiene formato "job_id_chunk_id"
             pipeline = [
                 {
                     "$addFields": {
-                        "chunk_object_id": {"$toObjectId": "$chunk_id"}
+                        "pure_chunk_id": {
+                            "$arrayElemAt": [
+                                {"$split": ["$chunk_id", "_"]},
+                                -1  # Tomar el último elemento después del último "_"
+                            ]
+                        }
                     }
                 },
                 {
                     "$lookup": {
                         "from": "chunks",
-                        "localField": "chunk_object_id",
-                        "foreignField": "_id",
+                        "localField": "pure_chunk_id",  # UUID sin prefijo
+                        "foreignField": "_id",           # UUID sin prefijo
                         "as": "chunk"
                     }
                 },
@@ -1271,6 +1387,492 @@ Basado en la información anterior, reflexiona:
 ---
 *Este es un caso real detectado en tu proyecto. Analiza cuidadosamente cada aspecto.*
 """
+
+    # ==================== ENHANCED LOG ANALYSIS METHODS ====================
+
+    def _analyze_log_type_detailed(self, log_entries: List[str]) -> LogTypeInfo:
+        """Analyze log entries to determine detailed type information (dynamic)"""
+        if not log_entries:
+            return LogTypeInfo(
+                format_type="No estructurado",
+                has_structured_data=False,
+                typical_fields=[],
+                sample_entries=[]
+            )
+
+        # Analyze structure dynamically from actual logs
+        structure_analysis = self._analyze_log_structure(log_entries)
+        timestamp_analysis = self._analyze_timestamps(log_entries)
+        fields_analysis = self._extract_fields_dynamically(log_entries)
+
+        sample_entries = log_entries[:3]
+
+        # Build format type description from detected patterns
+        format_type = self._describe_format_type(structure_analysis)
+
+        # Build timestamp format from actual examples
+        timestamp_format = timestamp_analysis.get("description") if timestamp_analysis else None
+
+        return LogTypeInfo(
+            format_type=format_type,
+            timestamp_format=timestamp_format,
+            has_structured_data=structure_analysis.get("has_structure", False),
+            typical_fields=fields_analysis[:10],  # Top 10 most common fields
+            sample_entries=sample_entries
+        )
+
+    def _analyze_log_structure(self, log_entries: List[str]) -> dict:
+        """Dynamically analyze the structure of log entries"""
+        structure_info = {
+            "has_structure": False,
+            "patterns_found": [],
+            "separators": [],
+            "has_json": False,
+            "has_brackets": False,
+            "has_timestamp_prefix": False,
+            "has_ip": False
+        }
+
+        for entry in log_entries[:50]:
+            entry = entry.strip()
+
+            # Detect JSON
+            if entry.startswith('{') and ('"' in entry or '"' in entry):
+                structure_info["has_json"] = True
+                structure_info["has_structure"] = True
+                structure_info["patterns_found"].append("json")
+                continue
+
+            # Detect IP address at start (common in web server logs)
+            if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', entry):
+                structure_info["has_ip"] = True
+                structure_info["has_structure"] = True
+
+            # Detect brackets [timestamp] or [component]
+            if '[' in entry[:50] and ']' in entry[:100]:
+                structure_info["has_brackets"] = True
+                structure_info["patterns_found"].append("brackets")
+
+            # Detect separators
+            if entry.count('|') >= 3:
+                structure_info["separators"].append("pipe")
+            if entry.count(',') >= 5:
+                structure_info["separators"].append("comma")
+            if entry.count('\t') >= 3:
+                structure_info["separators"].append("tab")
+
+            # Detect timestamp prefix
+            if re.match(r'^\d{4}-\d{2}-\d{2}', entry) or re.match(r'^\d{2}/\w{3}/\d{4}', entry):
+                structure_info["has_timestamp_prefix"] = True
+
+        return structure_info
+
+    def _analyze_timestamps(self, log_entries: List[str]) -> dict:
+        """Extract and analyze timestamp formats from actual logs"""
+        timestamp_examples = []
+        formats_found = []
+
+        for entry in log_entries[:30]:
+            entry = entry.strip()
+
+            # ISO8601: 2024-01-15T10:30:45Z or 2024-01-15 10:30:45
+            iso_match = re.search(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}', entry)
+            if iso_match:
+                timestamp_examples.append(iso_match.group(0))
+                if "ISO8601" not in formats_found:
+                    formats_found.append("ISO8601")
+
+            # Apache: 15/Jan/2024:10:30:45
+            apache_match = re.search(r'\d{2}/\w{3}/\d{4}:\d{2}:\d{2}:\d{2}', entry)
+            if apache_match:
+                timestamp_examples.append(apache_match.group(0))
+                if "Apache" not in formats_found:
+                    formats_found.append("Apache")
+
+            # Unix timestamp: 1705315845 or 1705315845.123
+            unix_match = re.search(r'\b\d{10}\.?\d{0,3}\b', entry)
+            if unix_match and int(unix_match.group(0)[:10]) > 1000000000:
+                timestamp_examples.append(unix_match.group(0))
+                if "Unix" not in formats_found:
+                    formats_found.append("Unix")
+
+        if not timestamp_examples:
+            return {}
+
+        # Build description from actual examples
+        most_common = max(set(timestamp_examples), key=timestamp_examples.count) if timestamp_examples else ""
+        return {
+            "description": f"Ejemplo detectado: {most_common}",
+            "formats_found": formats_found,
+            "examples": timestamp_examples[:3]
+        }
+
+    def _extract_fields_dynamically(self, log_entries: List[str]) -> List[str]:
+        """Extract field names dynamically from actual log patterns"""
+        field_counts = {}
+
+        for entry in log_entries[:50]:
+            entry = entry.strip()
+
+            # JSON fields
+            if entry.startswith('{'):
+                fields = self._extract_json_fields(entry)
+                for field in fields:
+                    field_counts[field] = field_counts.get(field, 0) + 1
+
+            # Key-value pairs: key=value or key: value
+            kv_pattern = re.findall(r'(\w+)[:=]\s*([^\s,]+|"[^"]*")', entry)
+            for key, _ in kv_pattern:
+                if len(key) > 2 and len(key) < 30:  # Reasonable field name length
+                    field_counts[key] = field_counts.get(key, 0) + 1
+
+            # Bracket patterns: [field_name]
+            bracket_fields = re.findall(r'\[([\w\-\.]+)\]', entry)
+            for field in bracket_fields:
+                # Filter out non-field patterns
+                if not any(x in field.lower() for x in ["error", "warn", "info", "debug"]):
+                    field_counts[field] = field_counts.get(field, 0) + 1
+
+        # Sort by frequency and return top fields
+        sorted_fields = sorted(field_counts.items(), key=lambda x: x[1], reverse=True)
+        return [field for field, count in sorted_fields]
+
+    def _describe_format_type(self, structure_analysis: dict) -> str:
+        """Generate format description from detected patterns"""
+        parts = []
+
+        if structure_analysis.get("has_json"):
+            parts.append("Estructurado JSON")
+
+        if structure_analysis.get("has_ip"):
+            parts.append("Con dirección IP al inicio")
+
+        if structure_analysis.get("has_timestamp_prefix"):
+            parts.append("Con timestamp al inicio")
+
+        if "pipe" in structure_analysis.get("separators", []):
+            parts.append("Campos separados por |")
+
+        if "comma" in structure_analysis.get("separators", []):
+            parts.append("Campos separados por coma")
+
+        if "tab" in structure_analysis.get("separators", []):
+            parts.append("Campos separados por tabulador")
+
+        if structure_analysis.get("has_brackets"):
+            parts.append("Con campos entre corchetes")
+
+        if not parts:
+            return "Texto plano / Sin estructura detectada"
+
+        return " | ".join(parts) if len(parts) <= 2 else "Formato mixto con múltiples patrones"
+
+    def _extract_json_fields(self, json_entry: str) -> List[str]:
+        """Extract field names from a JSON log entry"""
+        try:
+            import json
+            data = json.loads(json_entry)
+            return list(data.keys())
+        except:
+            return []
+
+    async def _identify_log_sources(
+        self,
+        conn,
+        project_id: UUID,
+        sample_logs: List[str]
+    ) -> List[LogSourceInfo]:
+        """Identify the main sources of logs (services, components) dynamically"""
+        sources = {}
+
+        for entry in sample_logs[:30]:
+            # Extract all possible source names
+            extracted_names = self._extract_all_source_names(entry)
+
+            for name in extracted_names:
+                if name:
+                    if name not in sources:
+                        sources[name] = {
+                            "service_name": name,
+                            "log_count": 0,
+                            "anomaly_count": 0,
+                            "example_entries": []
+                        }
+                    sources[name]["log_count"] += 1
+                    if len(sources[name]["example_entries"]) < 2:
+                        sources[name]["example_entries"].append(entry[:100])
+
+        # Convert to list and sort by log count
+        source_list = [
+            LogSourceInfo(
+                service_name=v["service_name"],
+                log_count=v["log_count"],
+                anomaly_count=v["anomaly_count"],  # Would need MongoDB query
+                example_entries=v["example_entries"]
+            )
+            for v in sources.values()
+        ]
+        source_list.sort(key=lambda x: x.log_count, reverse=True)
+
+        return source_list[:5]  # Top 5 sources
+
+    # ==================== LOG SOURCE DETECTION ====================
+
+    def _detect_log_sources(self, log_entries: List[str]) -> dict:
+        """
+        Detect the specific source/system that generated the logs - DYNAMIC.
+        Analyzes patterns, keywords, and structures to infer the source.
+        """
+        # 1. Extract unique identifiers and patterns from logs
+        signatures = self._extract_log_signatures(log_entries)
+
+        # 2. Group similar signatures
+        signature_groups = self._group_similar_signatures(signatures)
+
+        # 3. Identify the most likely source based on patterns
+        detected_source = self._infer_source_from_patterns(signature_groups, log_entries)
+
+        return detected_source
+
+    def _extract_log_signatures(self, log_entries: List[str]) -> List[dict]:
+        """Extract unique signatures/identifiers from log entries"""
+        signatures = []
+
+        for entry in log_entries[:50]:
+            entry = entry.strip()
+            if not entry:
+                continue
+
+            signature = {
+                "original": entry,
+                "patterns": {
+                    "bracket_content": [],
+                    "colon_prefix": [],
+                    "product_names": [],
+                    "error_keywords": [],
+                    "unique_strings": []
+                }
+            }
+
+            # Extract content between brackets
+            brackets = re.findall(r'\[([^\]]+)\]', entry)
+            signature["patterns"]["bracket_content"] = brackets
+
+            # Extract prefixes before colons (service names)
+            colon_matches = re.finditer(r'^([\w\.\-]+):\s*', entry)
+            for match in colon_matches:
+                prefix = match.group(1)
+                if len(prefix) > 2 and len(prefix) < 30:
+                    signature["patterns"]["colon_prefix"].append(prefix)
+
+            # Extract common product/service names (capitalized words)
+            words = re.findall(r'\b[A-Z][a-zA-Z0-9]+\b', entry)
+            signature["patterns"]["product_names"] = list(set(words))
+
+            # Extract error keywords
+            error_keywords = re.findall(r'\b(error|failed|denied|timeout|exception|fatal|critical)\b', entry, re.IGNORECASE)
+            signature["patterns"]["error_keywords"] = list(set(error_keywords))
+
+            # Extract file extensions (.php, .js, etc.)
+            extensions = re.findall(r'\b\.\w{2,5}\b', entry)
+            signature["patterns"]["extensions"] = list(set(extensions))
+
+            signatures.append(signature)
+
+        return signatures
+
+    def _group_similar_signatures(self, signatures: List[dict]) -> dict:
+        """Group similar signatures and identify common patterns"""
+        groups = {
+            "bracket_content": {},
+            "colon_prefix": {},
+            "product_names": {},
+            "extensions": {}
+        }
+
+        for sig in signatures:
+            # Count bracket contents
+            for content in sig["patterns"]["bracket_content"]:
+                groups["bracket_content"][content] = groups["bracket_content"].get(content, 0) + 1
+
+            # Count colon prefixes
+            for prefix in sig["patterns"]["colon_prefix"]:
+                groups["colon_prefix"][prefix] = groups["colon_prefix"].get(prefix, 0) + 1
+
+            # Count product names
+            for name in sig["patterns"]["product_names"]:
+                if len(name) > 3:  # Ignore short words
+                    groups["product_names"][name] = groups["product_names"].get(name, 0) + 1
+
+            # Count extensions
+            for ext in sig["patterns"]["extensions"]:
+                groups["extensions"][ext] = groups["extensions"].get(ext, 0) + 1
+
+        return groups
+
+    def _infer_source_from_patterns(self, groups: dict, log_entries: List[str]) -> dict:
+        """Infer the most likely source based on detected patterns"""
+        detected_sources = []
+        primary_source = "Fuente genérica"
+        confidence = "low"
+        details = []
+
+        # Check for product names that indicate specific sources
+        product_names = sorted(groups["product_names"].items(), key=lambda x: x[1], reverse=True)
+        if product_names:
+            top_products = product_names[:5]
+            for name, count in top_products:
+                detected_sources.append(f"{name} ({count} menciones)")
+
+        # Check for bracket patterns
+        bracket_patterns = sorted(groups["bracket_content"].items(), key=lambda x: x[1], reverse=True)
+        if bracket_patterns:
+            top_brackets = bracket_patterns[:3]
+            for content, count in top_brackets:
+                if len(content) < 50:  # Reasonable length
+                    detected_sources.append(f"[{content}] ({count} veces)")
+
+        # Check for colon prefixes (likely service names)
+        colon_prefixes = sorted(groups["colon_prefix"].items(), key=lambda x: x[1], reverse=True)
+        if colon_prefixes:
+            for prefix, count in colon_prefixes[:3]:
+                if prefix and not prefix.lower().startswith(("time", "date", "level")):
+                    detected_sources.append(f"{prefix} ({count} veces)")
+
+        # Check for file extensions (indicates language/platform)
+        extensions = sorted(groups["extensions"].items(), key=lambda x: x[1], reverse=True)
+        if extensions:
+            ext_info = {
+                ".php": "PHP",
+                ".js": "JavaScript/Node.js",
+                ".py": "Python",
+                ".java": "Java",
+                ".exe": "Windows/Ejecutable",
+                ".dll": "Windows/DLL",
+                ".so": "Linux/Shared Library",
+            }
+            for ext, count in extensions[:5]:
+                if ext in ext_info:
+                    detected_sources.append(f"{ext_info[ext]} (extensión {ext})")
+
+        # Determine primary source
+        if colon_prefixes:
+            # Most frequent colon prefix is likely the service name
+            primary_source = colon_prefixes[0][0]
+            confidence = "medium" if colon_prefixes[0][1] > 3 else "low"
+        elif product_names:
+            primary_source = product_names[0][0]
+            confidence = "medium" if product_names[0][1] > 3 else "low"
+
+        # Build details description
+        if detected_sources:
+            details = f"Fuentes detectadas: {', '.join(detected_sources[:3])}"
+        else:
+            details = "No se detectaron patrones característicos de una fuente específica"
+
+        return {
+            "detected_sources": detected_sources[:5],
+            "primary_source": primary_source,
+            "confidence": confidence,
+            "details": details
+        }
+
+    def _generate_source_description(self, sources_found: dict, log_entries: List[str]) -> str:
+        """Generate a human-readable description of detected sources"""
+        if not sources_found or not any(sources_found.values()):
+            return "Los logs no contienen patrones característicos de ningún sistema o aplicación específica."
+
+        # Find the most common pattern
+        all_patterns = []
+        for category, patterns in sources_found.items():
+            for pattern, count in patterns.items():
+                all_patterns.append((pattern, count, category))
+
+        if not all_patterns:
+            return "No se detectaron patrones específicos."
+
+        # Sort by count
+        all_patterns.sort(key=lambda x: x[1], reverse=True)
+        top_pattern = all_patterns[0]
+
+        pattern, count, category = top_pattern
+
+        # Map category to description
+        category_descriptions = {
+            "bracket_content": "entre corchetes",
+            "colon_prefix": "como prefijo de servicio",
+            "product_names": "como nombre de producto",
+            "extensions": "como extensión de archivo"
+        }
+
+        return f"La fuente más detectada es **\"{pattern}\"** ({category_descriptions.get(category, '')}, {count} menciones)."
+
+    def _extract_all_source_names(self, log_entry: str) -> List[str]:
+        """Extract all possible source/service names from a log entry"""
+        names = []
+        entry = log_entry.strip()
+
+        # Pattern 1: [ServiceName] or [Service] at any position
+        bracket_matches = re.findall(r'\[([\w\-\.]+)\]', entry)
+        for match in bracket_matches:
+            # Filter out obvious non-service patterns
+            if not any(x in match.lower() for x in ["error", "warn", "info", "debug", "client", "thread", "date", "time"]):
+                names.append(match)
+
+        # Pattern 2: ServiceName: at the beginning
+        colon_match = re.match(r'^([\w\-\.]+):\s', entry)
+        if colon_match:
+            names.append(colon_match.group(1))
+
+        # Pattern 3: "service": "..." in JSON
+        if entry.startswith('{'):
+            service_match = re.search(r'"(service|component|logger|source|app|application)":\s*"([^"]+)"', entry, re.IGNORECASE)
+            if service_match:
+                names.append(service_match.group(2))
+
+        # Pattern 4: ServiceName surrounded by common separators
+        separator_matches = re.findall(r'[\s|,\t]+([\w\-\.]+)(?=\s*[\[\|:,]|\s+[A-Z]{3,}\s)', entry)
+        for match in separator_matches:
+            if len(match) > 2 and len(match) < 30:
+                names.append(match)
+
+        # Deduplicate while preserving order
+        seen = set()
+        unique_names = []
+        for name in names:
+            if name.lower() not in seen:
+                seen.add(name.lower())
+                unique_names.append(name)
+
+        return unique_names[:3]  # Max 3 names per entry
+
+    def _get_predominant_log_level(self, log_entries: List[str]) -> Optional[str]:
+        """Determine the predominant log level in the sample"""
+        level_counts = {}
+
+        for entry in log_entries:
+            entry_upper = entry.upper()
+
+            # Common log levels
+            for level in ["TRACE", "DEBUG", "INFO", "WARN", "WARNING", "ERROR", "CRITICAL", "FATAL", "PANIC"]:
+                # Match as whole word or at start
+                if re.search(r'\b' + level + r'\b', entry_upper) or entry_upper.startswith(level + " "):
+                    level_counts[level] = level_counts.get(level, 0) + 1
+
+        # Handle WARN/WARNING grouping
+        if "WARN" in level_counts and "WARNING" in level_counts:
+            level_counts["WARN"] += level_counts.pop("WARNING")
+
+        if not level_counts:
+            return None
+
+        # Find predominant level
+        max_count = max(level_counts.values())
+        for level, count in level_counts.items():
+            if count == max_count:
+                return level
+
+        return None
 
 
 # Singleton instance

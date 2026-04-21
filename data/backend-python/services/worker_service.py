@@ -509,8 +509,17 @@ class WorkerService:
                     anomalies=batch_anomalies,
                     processing_time=time.time() - start_time
                 )
-                await db_manager.mongodb_client.logsanomaly.results.insert_one(batch_result.dict())
-                print(f"✅ Batch guardado en MongoDB: {len(batch_anomalies)} anomalías")
+
+                # Debug: Verificar estructura antes de guardar
+                print(f"📊 Guardando batch: chunk_id={chunk_id_with_prefix}")
+                print(f"   anomalies count: {len(batch_anomalies)}")
+                if batch_anomalies:
+                    first = batch_anomalies[0]
+                    print(f"   First anomaly is_anomaly: {first.is_anomaly}")
+                    print(f"   First anomaly score: {first.score}")
+
+                result = await db_manager.mongodb_client.logsanomaly.results.insert_one(batch_result.dict())
+                print(f"✅ Batch guardado en MongoDB: {len(batch_anomalies)} anomalías, inserted_id: {result.inserted_id}")
             
             # 4. Publicar progreso del batch si hay job_id (para streaming en UI)
             if job_id and batch_anomalies:
