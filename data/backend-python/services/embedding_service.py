@@ -26,7 +26,7 @@ AVAILABLE_MODELS = {
 }
 
 # Modelo por defecto (nombre completo con prefijo)
-DEFAULT_MODEL = os.getenv("FASTEMBED_MODEL", "BAAI/bge-small-en-v1.5")
+DEFAULT_MODEL = os.getenv("FASTEMBED_MODEL", "BAAI/bge-base-en-v1.5")
 
 
 def get_vector_size_for_model(model_name: str) -> int:

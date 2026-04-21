@@ -87,6 +87,7 @@ async def get_llm_service_with_fallback(
 
     # 1. Obtener modelo default
     default_config = await workspace_llm_config_service.get_models_by_role(workspace_id, "default")
+    logger.info(f"Default config obtenida: {default_config}")
     if default_config:
         config = default_config[0]
         try:
@@ -94,6 +95,7 @@ async def get_llm_service_with_fallback(
             full_config = await workspace_llm_config_service.get_workspace_config(
                 workspace_id, config['provider']
             )
+            logger.info(f"Full config para {config['provider']}: has_apiKey={bool(full_config and full_config.get('apiKey'))}")
             if full_config and full_config.get('apiKey'):
                 provider = LLMProvider(config['provider'])
                 service = get_llm_service(provider)
@@ -110,8 +112,12 @@ async def get_llm_service_with_fallback(
                         'model': config['model'],
                         'role': 'default'
                     }
+            else:
+                logger.warning(f"No se encontró apiKey en config para {config['provider']}")
         except Exception as e:
             logger.warning(f"Modelo default no disponible: {e}")
+    else:
+        logger.warning(f"No se encontró config default para workspace {workspace_id}")
 
     # 2. Intentar fallbacks
     fallback_configs = await workspace_llm_config_service.get_models_by_role(workspace_id, "fallback")

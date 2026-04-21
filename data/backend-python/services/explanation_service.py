@@ -13,6 +13,7 @@ from models.schemas.llm import LLMProvider
 from .log_analysis import LogParser, LogMetadata
 from .prompts import PromptBuilder
 from .explanation import ResponseParser, FallbackExplanationGenerator
+from services.evaluator.evaluator_service import evaluator_service
 
 logger = logging.getLogger(__name__)
 
@@ -64,21 +65,14 @@ class ExplanationService:
         logger.info("ExplanationService inicializado con servicios especializados")
     
     def _create_llm_client(self) -> LLMClientInterface:
-        """Crea el cliente LLM por defecto usando el factory pattern."""
-        try:
-            # Usar el factory para obtener el servicio default
-            llm_service = get_default_llm_service()
+        """
+        Crea el cliente LLM por defecto.
 
-            # Crear adaptador para compatibilidad con LLMClientInterface
-            return LLMServiceAdapter(
-                llm_service=llm_service,
-                provider=llm_service.__class__.__name__,
-                model=llm_service.default_model
-            )
-        except (ValueError, ImportError) as e:
-            logger.warning(f"No se pudo crear cliente LLM: {e}")
-            logger.warning("Se usará fallback para todas las explicaciones")
-            return None
+        NOTA: Este método siempre devuelve None para forzar el uso de
+        _get_llm_client_with_fallback() que obtiene credenciales desde la BD.
+        """
+        logger.info("LLM client se inicializará con credenciales del workspace")
+        return None
 
     async def _get_llm_client_with_fallback(self) -> Optional[LLMClientInterface]:
         """
@@ -96,27 +90,33 @@ class ExplanationService:
                 role="default"
             )
 
-            if not model_info:
-                logger.warning(f"No hay modelos LLM configurados para workspace {self.workspace_id}")
+            logger.info(f"get_llm_service_with_fallback retornó: service_type={type(llm_service)}, credentials={bool(credentials)}, model_info={bool(model_info)}")
+
+            # Verificar que todos los componentes necesarios están disponibles
+            if not model_info or not llm_service or not credentials:
+                logger.warning(f"No hay modelos LLM configurados para workspace {self.workspace_id} (model_info={bool(model_info)}, llm_service={bool(llm_service)}, credentials={bool(credentials)})")
                 return None
 
-            return LLMServiceAdapter(
+            adapter = LLMServiceAdapter(
                 llm_service=llm_service,
                 provider=model_info['provider'],
                 model=model_info['model'],
                 credentials=credentials
             )
+            logger.info(f"LLMServiceAdapter creado con llm_service_type={type(llm_service)}")
+            return adapter
         except Exception as e:
             logger.error(f"Error obteniendo cliente LLM con fallback: {e}")
             return self.llm_client
     
-    async def get_llm_explanation(self, log_entry: str, score: float) -> str:
+    async def get_llm_explanation(self, log_entry: str, score: float, use_evaluators: bool = True) -> str:
         """
         Obtiene una explicación inteligente del LLM para un log anómalo.
 
         Args:
             log_entry: Entrada de log
             score: Score de anomalía
+            use_evaluators: Si es True, usa evaluadores para mejorar la explicación
 
         Returns:
             Explicación generada
@@ -137,6 +137,7 @@ class ExplanationService:
             llm_client = await self._get_llm_client_with_fallback()
 
             # 4. Llamar al LLM (responsabilidad delegada)
+            initial_explanation = None
             if llm_client:
                 try:
                     response = await llm_client.generate_response(
@@ -147,16 +148,43 @@ class ExplanationService:
                     )
 
                     # 5. Limpiar la respuesta (responsabilidad delegada)
-                    cleaned_response = self.response_parser.clean_response(response)
+                    initial_explanation = self.response_parser.clean_response(response)
 
-                    if cleaned_response:
-                        logger.info(f"Explicación generada por LLM: {cleaned_response[:100]}...")
-                        return cleaned_response
+                    if initial_explanation:
+                        logger.info(f"Explicación generada por LLM: {initial_explanation[:100]}...")
+
+                        # 6. Usar evaluadores si está habilitado y hay workspace
+                        if use_evaluators and self.workspace_id:
+                            try:
+                                logger.info("Usando evaluadores para mejorar explicación...")
+                                evaluator_result = await evaluator_service.evaluate_explanation(
+                                    log_entry=log_entry,
+                                    score=score,
+                                    initial_explanation=initial_explanation
+                                )
+
+                                if evaluator_result.get("explanation"):
+                                    logger.info(f"Explicación mejorada por evaluadores (duración: {evaluator_result.get('duration', 0):.2f}s)")
+                                    return evaluator_result["explanation"]
+                                else:
+                                    logger.warning("Evaluadores no retornaron explicación, usando original")
+                                    return initial_explanation
+
+                            except Exception as e:
+                                logger.error(f"Error en evaluadores, usando explicación original: {e}")
+                                return initial_explanation
+
+                        return initial_explanation
+
                 except Exception as e:
                     logger.error(f"Error llamando al LLM: {e}")
 
-            # 6. Fallback si el LLM falla (responsabilidad delegada)
+            # 7. Fallback si el LLM falla (responsabilidad delegada)
             logger.warning("Usando explicación de fallback")
+            return self.fallback_generator.generate(log_entry, score)
+
+        except Exception as e:
+            logger.error(f"Error obteniendo explicación del LLM: {e}")
             return self.fallback_generator.generate(log_entry, score)
 
         except Exception as e:
@@ -164,8 +192,9 @@ class ExplanationService:
             return self.fallback_generator.generate(log_entry, score)
     
     async def get_batch_explanations(
-        self, 
-        anomaly_batch: List[Tuple[str, float]]
+        self,
+        anomaly_batch: List[Tuple[str, float]],
+        use_evaluators: bool = True
     ) -> List[str]:
         """
         Obtiene explicaciones para un lote de anomalías de una vez.
@@ -191,11 +220,14 @@ class ExplanationService:
             # 2. Construir prompt de batch (responsabilidad delegada)
             prompt = self.prompt_builder.build_batch_prompt(parsed_anomalies)
             system_prompt = self.prompt_builder.get_system_prompt()
-            
-            # 3. Llamar al LLM (responsabilidad delegada)
-            if self.llm_client:
+
+            # 3. Obtener cliente LLM con credenciales del workspace
+            llm_client = await self._get_llm_client_with_fallback()
+
+            # 4. Llamar al LLM (responsabilidad delegada)
+            if llm_client:
                 try:
-                    response = await self.llm_client.generate_response(
+                    response = await llm_client.generate_response(
                         prompt=prompt,
                         system_prompt=system_prompt,
                         temperature=self.temperature,
@@ -204,15 +236,48 @@ class ExplanationService:
                     
                     # 4. Parsear respuesta de batch (responsabilidad delegada)
                     explanations = self.response_parser.parse_batch_response(
-                        response, 
+                        response,
                         len(anomaly_batch)
                     )
-                    
+
                     logger.info(f"Explicaciones generadas para lote: {len(explanations)}")
+
+                    # 5. Aplicar evaluadores si está habilitado y hay workspace
+                    if use_evaluators and self.workspace_id:
+                        try:
+                            logger.info("Aplicando evaluadores a las explicaciones del lote...")
+                            improved_explanations = []
+
+                            for i, (log_entry, score) in enumerate(anomaly_batch):
+                                try:
+                                    evaluator_result = await evaluator_service.evaluate_explanation(
+                                        log_entry=log_entry,
+                                        score=score,
+                                        initial_explanation=explanations[i]
+                                    )
+
+                                    if evaluator_result.get("explanation"):
+                                        improved_explanations.append(evaluator_result["explanation"])
+                                        logger.debug(f"Anomalía {i+1}: explicación mejorada por evaluadores (severidad: {evaluator_result.get('severity', 'N/A')})")
+                                    else:
+                                        logger.warning(f"Evaluadores no retornaron explicación para anomalía {i+1}, usando original")
+                                        improved_explanations.append(explanations[i])
+
+                                except Exception as e:
+                                    logger.warning(f"Error en evaluador para anomalía {i+1}: {e}")
+                                    improved_explanations.append(explanations[i])
+
+                            logger.info(f"Evaluadores aplicados al lote: {len(improved_explanations)} explicaciones procesadas")
+                            return improved_explanations
+
+                        except Exception as e:
+                            logger.error(f"Error aplicando evaluadores al lote, usando explicaciones originales: {e}")
+                            return explanations
+
                     return explanations
                     
                 except Exception as e:
-                    logger.error(f"Error procesando lote con LLM: {e}")
+                    logger.error(f"Error procesando lote con LLM: {e}", exc_info=True)
             
             # 5. Fallback individual si falla el batch
             logger.warning("LLM no respondió, usando fallback individual")

@@ -76,16 +76,25 @@ class HealthResponse:
 # === INICIALIZACIÓN DE BASES DE DATOS ===
 @app.on_event("startup")
 async def startup_event():
-    """Inicializar conexiones a bases de datos"""
+    """Inicializar conexiones a bases de datos y precargar modelos"""
     try:
         await db_manager.connect_all()
         logger.info("✅ Todas las bases de datos conectadas")
-        
+
         # Inicializar servicio de monitoreo
         monitoring_service.set_services(db_manager, worker_service)
         asyncio.create_task(monitoring_service.start_monitoring(interval=30))
         logger.info("✅ Servicio de monitoreo iniciado")
-        
+
+        # Precargar modelo de embeddings para evitar timeout en primera petición
+        from services.embedding_service import preload_model
+        try:
+            preload_model()  # Esto descargará el modelo si no existe en cache
+            logger.info("✅ Modelo de embeddings precargado")
+        except Exception as e:
+            logger.warning(f"⚠️  No se pudo precargar el modelo de embeddings: {e}")
+            logger.warning("⚠️  El modelo se descargará en la primera petición (puede causar latencia)")
+
     except Exception as e:
         logger.error(f"❌ Error conectando bases de datos: {e}")
         raise
@@ -780,43 +789,58 @@ async def process_file(
 async def get_status(job_id: str):
     """Obtener estado de procesamiento"""
     try:
+        logger.info(f"Obteniendo estado para job {job_id}")
         async with db_manager.postgres_pool.acquire() as conn:
             job = await conn.fetchrow("""
                 SELECT * FROM processing.processing_jobs WHERE id = $1
             """, job_id)
-            
+
             if not job:
+                logger.warning(f"Job {job_id} no encontrado")
                 raise HTTPException(status_code=404, detail="Job no encontrado")
-            
+
+            logger.info(f"Job encontrado: status={job['status']}, total_chunks={job['total_chunks']}")
+
             # Contar chunks procesados
-            chunks_processed = await db_manager.mongodb_client.logsanomaly.chunks.count_documents({
-                "file_id": job_id,
-                "processed": True
-            })
-            
+            try:
+                chunks_processed = await db_manager.mongodb_client.logsanomaly.chunks.count_documents({
+                    "file_id": job_id,
+                    "processed": True
+                })
+                logger.info(f"Chunks procesados: {chunks_processed}")
+            except Exception as mongo_error:
+                logger.error(f"Error contando chunks en MongoDB: {mongo_error}", exc_info=True)
+                chunks_processed = 0
+
             # Contar anomalías encontradas
-            anomalies_found = await db_manager.mongodb_client.logsanomaly.results.aggregate([
-                {"$match": {"chunk_id": {"$regex": f"^{job_id}"}}},
-                {"$unwind": "$anomalies"},
-                {"$count": "total"}
-            ]).to_list(length=1)
-            
-            anomalies_count = anomalies_found[0]["total"] if anomalies_found else 0
-            
-            progress = chunks_processed / job["total_chunks"] if job["total_chunks"] > 0 else 0
-            
+            try:
+                anomalies_found = await db_manager.mongodb_client.logsanomaly.results.aggregate([
+                    {"$match": {"chunk_id": {"$regex": f"^{job_id}"}}},
+                    {"$unwind": "$anomalies"},
+                    {"$count": "total"}
+                ]).to_list(length=1)
+                anomalies_count = anomalies_found[0]["total"] if anomalies_found else 0
+                logger.info(f"Anomalías encontradas: {anomalies_count}")
+            except Exception as mongo_error:
+                logger.error(f"Error contando anomalías en MongoDB: {mongo_error}", exc_info=True)
+                anomalies_count = 0
+
+            progress = chunks_processed / job["total_chunks"] if job.get("total_chunks", 0) > 0 else 0
+
             return StatusResponseV2(
                 job_id=job_id,
                 status=ProcessingStatus(job["status"]),
                 progress=progress,
                 chunks_processed=chunks_processed,
-                total_chunks=job["total_chunks"],
+                total_chunks=job.get("total_chunks", 0),
                 anomalies_found=anomalies_count
             )
-            
+
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error obteniendo estado: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error obteniendo estado: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e) if str(e) else "Error interno")
 
 @app.get("/results/{job_id}/stream")
 async def stream_results(job_id: str):

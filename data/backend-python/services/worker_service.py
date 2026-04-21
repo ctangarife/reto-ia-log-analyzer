@@ -47,7 +47,9 @@ class WorkerService:
             total_points = collection_info.points_count
             return total_points >= 100
         except Exception as e:
-            print(f"Error verificando logs globales: {e}")
+            # Silenciar errores de validación de Pydantic (no críticos)
+            if "validation errors" not in str(e):
+                logger.warning(f"Error verificando logs globales: {e}")
             return False
 
     async def _detect_anomaly_with_embeddings(
@@ -224,7 +226,7 @@ class WorkerService:
                     structured_score = -0.5  # Score alto para anomalías estructuradas
                     print(f"🔴 Anomalía estructural: {line[:80]}... Razón: {structured_reasons}")
 
-                # --- PASO 2: Detección rápida por keywords (solo si no fue detectada por estructura) ---
+                # --- PASO 2: Detección rápida por keywords ---
                 is_anomaly_keywords = False
                 keyword_score = 0.0
 
@@ -254,6 +256,7 @@ class WorkerService:
                 is_anomaly_embeddings = False
                 embedding_score = 0.0
                 similar_logs = []
+                detection_method = "unknown"  # Valor por defecto, puede ser sobrescrito por embeddings
 
                 if job_id and not is_anomaly_structured and not is_anomaly_keywords:
                     self._line_counter += 1
@@ -288,7 +291,19 @@ class WorkerService:
                             enhanced_line = f"{line} [Fields: {', '.join(field_info[:5])}]"
 
                     # Agregar similar_logs para contexto en la explicación
-                    anomaly_data = (enhanced_line, score)
+                    # detection_method se determina según qué método detectó la anomalía
+                    if is_anomaly_structured or structured_score < 0:
+                        detection_method = "structured_pattern"
+                    elif is_anomaly_embeddings or embedding_score < 0:
+                        detection_method = "embedding_similarity"
+                    elif keyword_count > 0:
+                        detection_method = "keyword_analysis"
+                    elif parsed.get('is_anomaly', False):
+                        detection_method = "field_analysis"
+                    else:
+                        detection_method = "unknown"
+
+                    anomaly_data = (enhanced_line, score, detection_method)
                     if similar_logs:
                         anomaly_lines.append((anomaly_data, similar_logs))
                     else:
@@ -319,15 +334,30 @@ class WorkerService:
                     llm_batch = anomaly_lines[j:j + llm_batch_size]
                     print(f"Procesando lote {j//llm_batch_size + 1} de {len(llm_batch)} anomalías")
 
-                    # Extraer solo (line, score) para el LLM (similar_logs se usa para contexto)
-                    llm_input = [(anomaly_data[0], anomaly_data[1]) for anomaly_data, _ in llm_batch]
+                    # Extraer (line, score, detection_method) para cada anomalía
+                    # similar_logs se usa para contexto
+                    anomaly_info_list = []
+                    llm_input = []
+                    for anomaly_data, similar_logs in llm_batch:
+                        # anomaly_data ahora es (line, score, detection_method)
+                        line = anomaly_data[0]
+                        score = anomaly_data[1]
+                        detection_method = anomaly_data[2] if len(anomaly_data) > 2 else "unknown"
+                        anomaly_info_list.append((line, score, detection_method, similar_logs))
+                        llm_input.append((line, score))
 
                     # Obtener explicaciones para todo el lote de una vez
                     explanations = await explanation_service.get_batch_explanations(llm_input)
                     print(f"Explicaciones obtenidas: {len(explanations)}")
 
                     # Crear resultados para cada anomalía
-                    for ((line, score), similar_logs), explanation in zip(llm_batch, explanations):
+                    for anomaly_info, explanation in zip(anomaly_info_list, explanations):
+                        # anomaly_info es (line, score, detection_method, similar_logs)
+                        line = anomaly_info[0]
+                        score = anomaly_info[1]
+                        detection_method = anomaly_info[2]
+                        similar_logs = anomaly_info[3]
+
                         # Generar ID único para la anomalía
                         anomaly_id = str(uuid.uuid4())
 
@@ -344,6 +374,12 @@ class WorkerService:
                             method_note += " - Búsqueda específica del job actual"
                         elif detection_method == "isolation_forest_fallback":
                             method_note += " - Fallback: Datos insuficientes para análisis vectorial"
+                        elif detection_method == "structured_pattern":
+                            method_note += " - Análisis de estructura y patrones"
+                        elif detection_method == "keyword_analysis":
+                            method_note += " - Palabras clave sospechosas"
+                        elif detection_method == "field_analysis":
+                            method_note += " - Análisis de campos anómalos"
 
                         enhanced_explanation = explanation + context_note + method_note
 
@@ -353,7 +389,8 @@ class WorkerService:
                             is_anomaly=True,
                             explanation=enhanced_explanation,
                             chunk_id=chunk_id,
-                            detection_method=detection_method
+                            detection_method=detection_method,
+                            severity="medium"  # Default, se puede mejorar con evaluadores individualmente
                         )
                         batch_anomalies.append(anomaly_result)
                         anomalies.append(anomaly_result)
@@ -408,11 +445,43 @@ class WorkerService:
         if self.current_processing_job and self.current_processing_job != file_id:
             print(f"Ya hay un archivo procesándose: {self.current_processing_job}. Esperando...")
             return []
-        
+
         # Marcar este job como el actual
         self.current_processing_job = file_id
-        
+
         try:
+            # Obtener project_id y workspace_id del job para usar credenciales correctas
+            project_id = None
+            workspace_id = None
+
+            async with db_manager.postgres_pool.acquire() as conn:
+                job = await conn.fetchrow("""
+                    SELECT project_id FROM processing.processing_jobs
+                    WHERE id = $1
+                """, file_id)
+
+                if job and job.get('project_id'):
+                    project_id = job['project_id']
+                    # Obtener workspace_id del proyecto (la columna se llama 'id' en auth.projects)
+                    project = await conn.fetchrow("""
+                        SELECT workspace_id FROM auth.projects
+                        WHERE id = $1
+                    """, project_id)
+                    workspace_id = str(project['workspace_id']) if project else None
+
+            if not project_id or not workspace_id:
+                print(f"⚠️  No se encontró project_id o workspace_id para el job {file_id}")
+            else:
+                print(f"📋 Procesando con workspace_id: {workspace_id}, project_id: {project_id}")
+
+            # Establecer workspace_id en services para usar credenciales correctas
+            if workspace_id:
+                from services.explanation_service import explanation_service
+                from services.evaluator.evaluator_service import evaluator_service
+                explanation_service.set_workspace_id(workspace_id)
+                evaluator_service.workspace_id = workspace_id
+                print(f"✅ Workspace ID establecido en services: {workspace_id}")
+
             chunks = await chunk_service.get_chunks_to_process(file_id)
             
             if not chunks:
@@ -436,7 +505,7 @@ class WorkerService:
             await self._update_job_status(file_id, "completed")
 
             # Calcular total de anomalías encontradas
-            total_anomalies = sum(len(r.get('anomalies', [])) for r in results)
+            total_anomalies = sum(len(r.anomalies) for r in results)
 
             # Publicar evento de completado con estadísticas
             await self._publish_job_completed(file_id, total_anomalies)

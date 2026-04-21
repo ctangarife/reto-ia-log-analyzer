@@ -137,3 +137,5 @@ doc/*
 data/static/*
 .mcp.json
 memory/
+
+screens/*

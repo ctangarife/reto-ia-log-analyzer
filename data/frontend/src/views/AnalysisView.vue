@@ -14,27 +14,25 @@
           <h2>Subir archivo de logs</h2>
 
           <!-- Sin archivo seleccionado -->
-          <FileUpload
-            v-if="!selectedFile"
-            :maxFileSize="30000000"
-            :multiple="false"
-            accept=".txt,.log,.json,.csv"
-            :auto="false"
-            @select="onFileSelect"
-            :customUpload="true"
-            :showCancelButton="false"
-            :showUploadButton="false"
-            chooseLabel="Seleccionar archivo"
-            :disabled="!canProcessLogs"
-          >
-            <template #empty>
-              <div class="upload-placeholder">
-                <i class="pi pi-file-import text-4xl"></i>
-                <p>Arrastra un archivo aquí o haz clic para seleccionar</p>
-                <small>Soporta: .txt, .log, .json, .csv (máx 30MB)</small>
-              </div>
-            </template>
-          </FileUpload>
+          <div v-if="!selectedFile" class="file-input-container">
+            <input
+              ref="fileInput"
+              type="file"
+              accept=".txt,.log,.json,.csv"
+              @change="onFileSelect"
+              :disabled="!canProcessLogs"
+              class="file-input"
+            />
+            <div
+              class="upload-placeholder"
+              @click="triggerFileInput"
+              :class="{ 'disabled': !canProcessLogs }"
+            >
+              <i class="pi pi-file-import text-4xl"></i>
+              <p>Arrastra un archivo aquí o haz clic para seleccionar</p>
+              <small>Soporta: .txt, .log, .json, .csv (máx 30MB)</small>
+            </div>
+          </div>
 
           <!-- Archivo seleccionado -->
           <div v-else class="selected-file-container">
@@ -147,7 +145,6 @@ import { ref, computed } from 'vue'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useAuthStore } from '../stores/authStore'
 import ProcessingV2 from '../components/ProcessingV2.vue'
-import FileUpload from 'primevue/fileupload'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import Accordion from 'primevue/accordion'
@@ -162,6 +159,7 @@ const authStore = useAuthStore()
 
 // Estado de upload
 const selectedFile = ref<File | null>(null)
+const fileInput = ref<HTMLInputElement | null>(null)
 
 const currentAnalysis = computed(() => store.currentAnalysis)
 
@@ -171,15 +169,24 @@ const canProcessLogs = computed(() => {
   return authStore.canProcessLogsInProject()
 })
 
-function onFileSelect(event: any) {
-  const file = event.files[0]
+function onFileSelect(event: Event) {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
   if (file) {
     selectedFile.value = file
   }
 }
 
+function triggerFileInput() {
+  if (!canProcessLogs.value) return
+  fileInput.value?.click()
+}
+
 function clearSelectedFile() {
   selectedFile.value = null
+  if (fileInput.value) {
+    fileInput.value.value = ''
+  }
 }
 
 async function processSelectedFile() {
@@ -283,10 +290,38 @@ function getSeverityClass(anomaly: any): string {
   color: #1e293b;
 }
 
+.file-input-container {
+  position: relative;
+}
+
+.file-input {
+  position: absolute;
+  width: 0.1px;
+  height: 0.1px;
+  opacity: 0;
+  overflow: hidden;
+  z-index: -1;
+}
+
 .upload-placeholder {
   text-align: center;
   padding: 2rem;
   color: #94a3b8;
+  border: 2px dashed #cbd5e1;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.upload-placeholder:hover:not(.disabled) {
+  border-color: #3b82f6;
+  background-color: #f0f9ff;
+  color: #3b82f6;
+}
+
+.upload-placeholder.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .upload-placeholder i {

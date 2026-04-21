@@ -47,9 +47,12 @@ class OllamaService(BaseLLMService):
         credentials: Optional[Dict[str, Any]] = None
     ) -> str:
         """Genera una respuesta usando Ollama Cloud"""
+        logger.info(f"generate_response llamado con credentials={bool(credentials)}, type={type(credentials)}")
         api_key = self._get_api_key(credentials)
         base_url = self._get_base_url(credentials)
         model = model or self.default_model
+
+        logger.info(f"API key obtenida: has_apiKey={bool(api_key)}, source='credentials' if credentials and credentials.get('apiKey') else 'env'")
 
         if not api_key:
             raise ValueError("OLLAMA_API_KEY no está configurada")
