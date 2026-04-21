@@ -10,9 +10,10 @@ import json
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from middleware.auth_middleware import get_current_user_optional
 
 # Agregar el directorio actual al path para importaciones
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -640,6 +641,7 @@ async def migrate_v2_courses_table():
 
 @app.post("/process", response_model=ProcessResponseV2)
 async def process_file(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     project_id: str = Form(...)
 ):
@@ -750,10 +752,10 @@ async def process_file(
         })
         logger.info(f"✅ Archivo original guardado para re-análisis: {file_id}")
         
-        # Iniciar procesamiento asíncrono
-        logger.info(f"🚀 Iniciando procesamiento asíncrono para {file_id}")
-        task = asyncio.create_task(worker_service.process_file_async(file_id))
-        logger.info(f"📋 Tarea de procesamiento creada: {task}")
+        # Iniciar procesamiento en background usando FastAPI BackgroundTasks
+        logger.info(f"🚀 Iniciando procesamiento en background para {file_id}")
+        background_tasks.add_task(worker_service.process_file_async, file_id)
+        logger.info(f"📋 Tarea de procesamiento agregada a background tasks")
         
         # Actualizar estado a processing
         async with db_manager.postgres_pool.acquire() as conn:
@@ -815,7 +817,8 @@ async def get_status(job_id: str):
             # Contar anomalías encontradas
             try:
                 anomalies_found = await db_manager.mongodb_client.logsanomaly.results.aggregate([
-                    {"$match": {"chunk_id": {"$regex": f"^{job_id}"}}},
+                    {"$match": {"chunk_id": {"$regex": f"^{job_id}"}}},  # chunk_id incluye job_id como prefijo
+                    {"$project": {"anomalies": 1, "_id": 0}},
                     {"$unwind": "$anomalies"},
                     {"$count": "total"}
                 ]).to_list(length=1)
@@ -825,12 +828,32 @@ async def get_status(job_id: str):
                 logger.error(f"Error contando anomalías en MongoDB: {mongo_error}", exc_info=True)
                 anomalies_count = 0
 
+            # Calcular progreso del chunk actual (para progress bar más visual)
+            chunk_progress = 0.0
+            if job["status"] == "processing" and chunks_processed < job.get("total_chunks", 1):
+                try:
+                    # Obtener progreso del chunk actual desde Redis
+                    progress_key = f"chunk_progress:{job_id}"
+                    progress_data = await db_manager.redis_client.get(progress_key)
+                    if progress_data:
+                        progress_dict = json.loads(progress_data)
+                        chunk_progress = progress_dict.get("progress", 0.0)
+                        logger.info(f"Progreso del chunk actual: {chunk_progress:.1f}%")
+                    else:
+                        chunk_progress = 0.0
+                except Exception as redis_error:
+                    logger.error(f"Error obteniendo progreso del chunk desde Redis: {redis_error}")
+                    chunk_progress = 0.0
+            elif job["status"] == "completed":
+                chunk_progress = 100.0
+
             progress = chunks_processed / job["total_chunks"] if job.get("total_chunks", 0) > 0 else 0
 
             return StatusResponseV2(
                 job_id=job_id,
                 status=ProcessingStatus(job["status"]),
                 progress=progress,
+                chunk_progress=chunk_progress,
                 chunks_processed=chunks_processed,
                 total_chunks=job.get("total_chunks", 0),
                 anomalies_found=anomalies_count
@@ -948,7 +971,7 @@ async def delete_job(job_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/jobs/{job_id}/reanalyze", response_model=ProcessResponseV2)
-async def reanalyze_job(job_id: str):
+async def reanalyze_job(background_tasks: BackgroundTasks, job_id: str):
     """Re-analizar un archivo usando el contenido original guardado"""
     try:
         # Verificar si ya hay un archivo procesándose
@@ -995,10 +1018,10 @@ async def reanalyze_job(job_id: str):
         })
         logger.info(f"✅ Archivo original guardado para re-análisis: {new_job_id} (original: {job_id})")
 
-        # Iniciar procesamiento asíncrono
-        logger.info(f"🚀 Iniciando re-procesamiento asíncrono para {new_job_id}")
-        task = asyncio.create_task(worker_service.process_file_async(new_job_id))
-        logger.info(f"📋 Tarea de re-procesamiento creada: {task}")
+        # Iniciar procesamiento en background usando FastAPI BackgroundTasks
+        logger.info(f"🚀 Iniciando re-procesamiento en background para {new_job_id}")
+        background_tasks.add_task(worker_service.process_file_async, new_job_id)
+        logger.info(f"📋 Tarea de re-procesamiento agregada a background tasks")
 
         # Actualizar estado a processing
         async with db_manager.postgres_pool.acquire() as conn:
@@ -1026,6 +1049,80 @@ async def reanalyze_job(job_id: str):
             status_code=500,
             detail=f"Error al iniciar el re-análisis: {error_detail}"
         )
+
+@app.get("/jobs/active")
+async def get_active_jobs(project_id: str | None = None, current_user = Depends(get_current_user_optional)):
+    """
+    Obtiene jobs activos (en procesamiento) para el proyecto actual.
+
+    Útil para mostrar procesos en curso cuando la UI se recarga.
+    """
+    try:
+        async with db_manager.postgres_pool.acquire() as conn:
+            if project_id:
+                jobs = await conn.fetch("""
+                    SELECT
+                        id,
+                        filename,
+                        total_size,
+                        total_chunks,
+                        chunks_processed,
+                        status,
+                        started_at,
+                        project_id
+                    FROM processing.processing_jobs
+                    WHERE status IN ('pending', 'processing') AND project_id = $1
+                    ORDER BY started_at DESC
+                """, project_id)
+            else:
+                jobs = await conn.fetch("""
+                    SELECT
+                        id,
+                        filename,
+                        total_size,
+                        total_chunks,
+                        chunks_processed,
+                        status,
+                        started_at,
+                        project_id
+                    FROM processing.processing_jobs
+                    WHERE status IN ('pending', 'processing')
+                    ORDER BY started_at DESC
+                """)
+
+        # Formatear respuesta
+        active_jobs = []
+        for job in jobs:
+            # Calcular progreso estimado
+            progress = 0.0
+            if job.get("total_chunks", 0) > 0:
+                progress = (job.get("chunks_processed", 0) / job["total_chunks"]) * 100
+
+            # Calcular tiempo transcurrido
+            from datetime import datetime, timezone
+            started_at = job["started_at"]
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=timezone.utc)
+            elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
+
+            active_jobs.append({
+                "id": str(job["id"]),
+                "filename": job["filename"],
+                "total_size": job["total_size"],
+                "total_chunks": job["total_chunks"],
+                "chunks_processed": job.get("chunks_processed", 0),
+                "status": job["status"],
+                "progress": round(progress, 1),
+                "started_at": started_at.isoformat(),
+                "elapsed_seconds": int(elapsed),
+                "project_id": str(job["project_id"]) if job.get("project_id") else None
+            })
+
+        return active_jobs
+
+    except Exception as e:
+        logger.error(f"Error obteniendo jobs activos: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/reports")
 async def get_reports(project_id: str | None = None):
@@ -1055,11 +1152,10 @@ async def get_reports(project_id: str | None = None):
             chunks = await db_manager.mongodb_client.logsanomaly.chunks.find({
                 "file_id": str(job_id)
             }).to_list(length=None)
-            
-            # Obtener resultados de anomalías usando los chunk_ids
-            chunk_ids = [str(chunk["_id"]) for chunk in chunks]
+
+            # Obtener resultados de anomalías usando job_id como prefijo
             results = await db_manager.mongodb_client.logsanomaly.results.find({
-                "chunk_id": {"$in": chunk_ids}
+                "chunk_id": {"$regex": f"^{job_id}"}  # chunk_id tiene formato job_id_chunk_id
             }).to_list(length=None)
             
             # Agregar anomalías de todos los chunks
@@ -1067,10 +1163,76 @@ async def get_reports(project_id: str | None = None):
             for result in results:
                 if "anomalies" in result:
                     all_anomalies.extend(result["anomalies"])
-            
+
+            # Agrupar anomalías similares para no mostrar duplicadas
+            from services.log_analysis.log_grouper import group_similar_logs
+
+            # Extraer solo los log_entry para agrupación
+            anomaly_logs = [anomaly["log_entry"] for anomaly in all_anomalies]
+
+            # Agrupar anomalías similares
+            # min_group_size=1 para agrupar TODAS (incluso las únicas aparecen como grupo de 1)
+            grouped_anomalies = group_similar_logs(
+                anomaly_logs,
+                similarity_threshold=0.90,  # 90% de similitud (igual que en evaluación final)
+                min_group_size=1  # Agrupar todo, incluyendo únicas
+            )
+
+            # Crear lista de anomalías representativas (una por grupo)
+            final_anomalies = []
+
+            for pattern, group_data in grouped_anomalies.items():
+                # Buscar TODAS las anomalías de este grupo
+                group_anomalies = []
+                for log in group_data["logs"]:
+                    for anomaly in all_anomalies:
+                        if anomaly["log_entry"] == log:
+                            group_anomalies.append(anomaly)
+                            break
+
+                # Priorizar: anomalías con explicación mejorada (tienen "mejorada" o analogías)
+                # Luego las que tienen severity asignado
+                # Luego cualquier otra
+                best_anomaly = None
+                best_score = -1
+
+                for anomaly in group_anomalies:
+                    score = 0
+                    explanation = anomaly.get("explanation", "")
+
+                    # Puntos por explicación mejorada
+                    if "mejorada" in explanation.lower() or "imagina" in explanation.lower():
+                        score += 100
+                    elif "analogía" in explanation.lower() or "restaurante" in explanation.lower():
+                        score += 80
+                    elif explanation and len(explanation) > 200:
+                        score += 50  # Explicaciones largas suelen ser mejores
+
+                    # Puntos por severity
+                    if anomaly.get("severity"):
+                        score += 20
+
+                    # Puntos si menciona "se repite" o "patrón"
+                    if "se repite" in explanation or "patrón" in explanation:
+                        score += 30
+
+                    if score > best_score:
+                        best_score = score
+                        best_anomaly = anomaly
+
+                if best_anomaly:
+                    # Modificar la anomalía para incluir información del grupo
+                    enhanced_anomaly = best_anomaly.copy()
+                    enhanced_anomaly["group_size"] = group_data["count"]
+                    enhanced_anomaly["grouped_anomalies"] = group_anomalies
+                    final_anomalies.append(enhanced_anomaly)
+
+            # Ordenar por tamaño de grupo (mayor primero) para priorizar anomalías más frecuentes
+            final_anomalies.sort(key=lambda x: x.get("group_size", 1), reverse=True)
+
             # Calcular estadísticas
             total_logs = sum(len(chunk["data"].split('\n')) for chunk in chunks)
-            anomalies_detected = len(all_anomalies)
+            anomalies_detected = len(all_anomalies)  # Total de anomalías detectadas
             chunks_processed = len([chunk for chunk in chunks if chunk.get("processed", False)])
             
             # Crear reporte
@@ -1080,7 +1242,7 @@ async def get_reports(project_id: str | None = None):
                 "fileName": job["filename"],
                 "total_logs": total_logs,
                 "anomalies_detected": anomalies_detected,
-                "anomalies": all_anomalies,
+                "anomalies": final_anomalies,  # Anomalías agrupadas
                 "report_file": f"db_report_{job_id}.json",
                 "file_id": str(job_id),
                 "status": job["status"],

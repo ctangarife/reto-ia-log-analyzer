@@ -8,6 +8,9 @@
 
     <!-- Contenido de análisis -->
     <template v-else>
+      <!-- Jobs Activos -->
+      <ActiveJobsList />
+
       <!-- Zona de upload -->
       <div class="upload-zone">
         <div v-if="!store.currentJob" class="upload-area">
@@ -93,41 +96,146 @@
         <!-- Detalle de anomalías -->
         <div v-if="currentAnalysis.anomalies && currentAnalysis.anomalies.length > 0" class="anomalies-detail">
           <Divider />
-          <h4>Detalle de anomalías detectadas</h4>
-          <Accordion :multiple="true">
-            <AccordionTab v-for="(anomaly, index) in displayedAnomalies" :key="index">
-              <template #header>
-                <span class="anomaly-title">
-                  <i class="pi pi-exclamation-triangle" style="color: #f59e0b;"></i>
-                  Anomalía #{{ index + 1 }}
-                  <Tag :value="getAnomalySeverity(anomaly)" :severity="getSeverityClass(anomaly)" class="ml-2" />
-                </span>
-              </template>
-              <div class="anomaly-content">
-                <div class="anomaly-log">
-                  <h5>Log detectado:</h5>
-                  <pre>{{ anomaly.log_entry || anomaly.log_line || anomaly.line || 'Sin información del log' }}</pre>
-                </div>
-                <div v-if="anomaly.explanation" class="anomaly-explanation">
-                  <h5>Explicación:</h5>
-                  <p>{{ anomaly.explanation }}</p>
-                </div>
-                <div v-if="anomaly.score !== undefined" class="anomaly-score">
-                  <h5>Score de anomalía:</h5>
-                  <ProgressBar :value="(anomaly.score * 100).toFixed(1)" :showValue="true" />
-                </div>
-              </div>
-            </AccordionTab>
-          </Accordion>
 
-          <!-- Paginación si hay muchas anomalías -->
-          <Paginator
-            v-if="currentAnalysis.anomalies.length > itemsPerPage"
-            :rows="itemsPerPage"
-            :totalRecords="currentAnalysis.anomalies.length"
-            @page="onPageChange"
-            class="mt-4"
-          />
+          <!-- Toggle para cambiar entre vista agrupada e individual -->
+          <div class="view-toggle mb-3">
+            <Button
+              :label="showGroupedView ? 'Ver Individual' : 'Ver Agrupado'"
+              :icon="showGroupedView ? 'pi pi-list' : 'pi pi-th-large'"
+              @click="showGroupedView = !showGroupedView"
+              size="small"
+              text
+            />
+            <Tag v-if="showGroupedView && anomalyGroups.length > 0" class="ml-2">
+              {{ anomalyGroups.length }} grupos únicos
+            </Tag>
+            <Tag v-else class="ml-2">
+              {{ currentAnalysis.anomalies.length }} anomalías totales
+            </Tag>
+          </div>
+
+          <!-- Vista agrupada (default cuando hay repeticiones) -->
+          <div v-if="showGroupedView">
+            <h4>Detalle de anomalías (Agrupado por similitud)</h4>
+            <Message severity="info" :closable="false" class="mb-3">
+              Las anomalías se han agrupado por patrones similares para evitar repeticiones.
+              Cada grupo representa un tipo de anomalía que puede repetirse múltiples veces.
+            </Message>
+
+            <div v-if="anomalyGroups.length > 0" class="anomaly-groups">
+              <div
+                v-for="group in anomalyGroups"
+                :key="group.id"
+                class="anomaly-group-card"
+                :class="{ 'high-severity': group.severity === 'critical' || group.severity === 'high' }"
+              >
+                <div class="group-header">
+                  <div class="group-title">
+                    <i class="pi pi-folder-open" style="color: #f59e0b;"></i>
+                    <span>Grupo #{{ group.id }} - {{ group.pattern.substring(0, 80) }}{{ group.pattern.length > 80 ? '...' : '' }}</span>
+                  </div>
+                  <div class="group-tags">
+                    <Tag :value="`${group.count} ${group.count === 1 ? 'vez' : 'veces'}`" severity="info" />
+                    <Tag :value="getAnomalySeverity(group)" :severity="getSeverityClass(group)" />
+                  </div>
+                </div>
+
+                <Accordion>
+                  <AccordionTab>
+                    <template #header>
+                      <span class="group-content-toggle">
+                        <i class="pi pi-eye"></i>
+                        Ver detalles
+                      </span>
+                    </template>
+
+                    <div class="group-content">
+                      <div class="group-stats">
+                        <div class="stat-item">
+                          <span class="stat-label">Total ocurrencias:</span>
+                          <span class="stat-value">{{ group.count }}</span>
+                        </div>
+                        <div class="stat-item">
+                          <span class="stat-label">Severidad:</span>
+                          <span class="stat-value">{{ getAnomalySeverity(group) }}</span>
+                        </div>
+                        <div class="stat-item" v-if="group.score !== undefined">
+                          <span class="stat-label">Score promedio:</span>
+                          <span class="stat-value">{{ (group.score * 100).toFixed(1) }}%</span>
+                        </div>
+                      </div>
+
+                      <div class="group-explanation">
+                        <h5>Explicación:</h5>
+                        <p>{{ group.explanation }}</p>
+                      </div>
+
+                      <div class="group-logs">
+                        <h5>Logs del grupo ({{ group.count }} ocurrencias):</h5>
+                        <small class="text-muted">Mostrando primera ocurrencia:</small>
+                        <pre>{{ group.representative }}</pre>
+
+                        <div v-if="group.count > 1" class="mt-3">
+                          <Button
+                            label="Ver todas las ocurrencias"
+                            size="small"
+                            text
+                            @click="toggleGroupOccurrences(group)"
+                          />
+                          <div v-if="group.showOccurrences" class="all-occurrences mt-3">
+                            <Divider />
+                            <div v-for="(occ, idx) in group.occurrences" :key="idx" class="occurrence-item">
+                              <small class="text-muted">Ocurrencia #{{ idx + 1 }}:</small>
+                              <pre>{{ occ.log_entry || occ.log_line || occ.line }}</pre>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </AccordionTab>
+                </Accordion>
+              </div>
+            </div>
+          </div>
+
+          <!-- Vista individual (original) -->
+          <div v-else>
+            <h4>Detalle de anomalías detectadas (Individual)</h4>
+            <Accordion :multiple="true">
+              <AccordionTab v-for="(anomaly, index) in displayedAnomalies" :key="index">
+                <template #header>
+                  <span class="anomaly-title">
+                    <i class="pi pi-exclamation-triangle" style="color: #f59e0b;"></i>
+                    Anomalía #{{ index + 1 }}
+                    <Tag :value="getAnomalySeverity(anomaly)" :severity="getSeverityClass(anomaly)" class="ml-2" />
+                  </span>
+                </template>
+                <div class="anomaly-content">
+                  <div class="anomaly-log">
+                    <h5>Log detectado:</h5>
+                    <pre>{{ anomaly.log_entry || anomaly.log_line || anomaly.line || 'Sin información del log' }}</pre>
+                  </div>
+                  <div v-if="anomaly.explanation" class="anomaly-explanation">
+                    <h5>Explicación:</h5>
+                    <p>{{ anomaly.explanation }}</p>
+                  </div>
+                  <div v-if="anomaly.score !== undefined" class="anomaly-score">
+                    <h5>Score de anomalía:</h5>
+                    <ProgressBar :value="(anomaly.score * 100).toFixed(1)" :showValue="true" />
+                  </div>
+                </div>
+              </AccordionTab>
+            </Accordion>
+
+            <!-- Paginación si hay muchas anomalías -->
+            <Paginator
+              v-if="currentAnalysis.anomalies.length > itemsPerPage"
+              :rows="itemsPerPage"
+              :totalRecords="currentAnalysis.anomalies.length"
+              @page="onPageChange"
+              class="mt-4"
+            />
+          </div>
         </div>
 
         <!-- Sin anomalías -->
@@ -145,6 +253,7 @@ import { ref, computed } from 'vue'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useAuthStore } from '../stores/authStore'
 import ProcessingV2 from '../components/ProcessingV2.vue'
+import ActiveJobsList from '../components/ActiveJobsList.vue'
 import Button from 'primevue/button'
 import Message from 'primevue/message'
 import Accordion from 'primevue/accordion'
@@ -162,6 +271,75 @@ const selectedFile = ref<File | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 
 const currentAnalysis = computed(() => store.currentAnalysis)
+
+// Agrupar anomalías similares
+const anomalyGroups = computed(() => {
+  if (!currentAnalysis.value?.anomalies) return []
+
+  const groups: Record<string, any> = {}
+
+  currentAnalysis.value.anomalies.forEach(anomaly => {
+    const logEntry = anomaly.log_entry || anomaly.log_line || anomaly.line || ''
+
+    // Extraer patrón (remover timestamps, IDs, etc.)
+    const pattern = extractPattern(logEntry)
+
+    if (!groups[pattern]) {
+      groups[pattern] = {
+        pattern: pattern,
+        count: 0,
+        representative: logEntry,
+        explanation: anomaly.explanation,
+        score: anomaly.score,
+        severity: anomaly.severity,
+        occurrences: []
+      }
+    }
+
+    groups[pattern].count++
+    groups[pattern].occurrences.push(anomaly)
+  })
+
+  // Convertir a array y ordenar por frecuencia
+  return Object.values(groups)
+    .sort((a, b) => b.count - a.count)
+    .map((group, index) => ({
+      ...group,
+      id: index + 1,
+      first_occurrence: group.occurrences[0]
+    }))
+})
+
+// Extraer patrón de un log (versión simplificada)
+function extractPattern(logLine: string): string {
+  if (!logLine) return ''
+
+  let pattern = logLine
+
+  // Remover timestamps
+  pattern = pattern.replace(/\[\w{3} \w{3} \s+\d+ \d{2}:\d{2}:\d{2} \d{4}\]/g, '[TIMESTAMP]')
+  pattern = pattern.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/g, '[TIMESTAMP]')
+  pattern = pattern.replace(/\w{3} \w{3} \d{2} \d{2}:\d{2}:\d{2}/g, '[TIMESTAMP]')
+
+  // Remover IDs numéricos
+  pattern = pattern.replace(/\bchild \d+\b/g, 'child [ID]')
+  pattern = pattern.replace(/\bslot \d+\b/g, 'slot [ID]')
+  pattern = pattern.replace(/\bstate \d+\b/g, 'state [ID]')
+
+  // Remover números de puerto
+  pattern = pattern.replace(/:\d{4,5}/g, ':[PORT]')
+
+  return pattern.trim()
+}
+
+// Determinar si mostrar grupos o anomalías individuales
+const showGroupedView = computed(() => {
+  // Mostrar grupos si hay más de 10 anomalías o si hay repeticiones
+  if (!currentAnalysis.value?.anomalies) return false
+  const anomalyCount = currentAnalysis.value.anomalies.length
+  const hasRepetitions = anomalyGroups.value.some(g => g.count > 1)
+  return anomalyCount > 10 || hasRepetitions
+})
 
 // Permisos
 const canProcessLogs = computed(() => {
@@ -253,6 +431,11 @@ function getSeverityClass(anomaly: any): string {
   if (score > 0.6) return 'warn'
   if (score > 0.4) return 'info'
   return 'success'
+}
+
+// Funciones para vista agrupada
+function toggleGroupOccurrences(group: any) {
+  group.showOccurrences = !group.showOccurrences
 }
 </script>
 
@@ -505,6 +688,162 @@ function getSeverityClass(anomaly: any): string {
 .no-anomalies p {
   margin: 0;
   color: #64748b;
+}
+
+/* Estilos para vista agrupada */
+.view-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.anomaly-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.anomaly-group-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 1.5rem;
+  transition: all 0.3s ease;
+}
+
+.anomaly-group-card:hover {
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.anomaly-group-card.high-severity {
+  border-left: 4px solid #dc2626;
+  background: #fef2f2;
+}
+
+.group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.group-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  color: #1e293b;
+}
+
+.group-tags {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.group-content-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #64748b;
+}
+
+.group-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.group-stats {
+  display: flex;
+  gap: 2rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stat-value {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.group-explanation {
+  background: white;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.group-explanation h5 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.875rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.group-explanation p {
+  margin: 0;
+  color: #475569;
+  line-height: 1.6;
+}
+
+.group-logs {
+  background: white;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.group-logs h5 {
+  margin: 0 0 0.5rem 0;
+  font-size: 0.875rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.group-logs pre {
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 1rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.all-occurrences {
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.occurrence-item {
+  padding: 0.75rem 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.occurrence-item:last-child {
+  border-bottom: none;
+}
+
+.text-muted {
+  color: #94a3b8;
 }
 </style>
 

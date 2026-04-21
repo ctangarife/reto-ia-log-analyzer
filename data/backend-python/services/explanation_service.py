@@ -194,31 +194,37 @@ class ExplanationService:
     async def get_batch_explanations(
         self,
         anomaly_batch: List[Tuple[str, float]],
-        use_evaluators: bool = True
+        use_evaluators: bool = True,
+        repetition_summary: str = ""
     ) -> List[str]:
         """
         Obtiene explicaciones para un lote de anomalías de una vez.
-        
+
         Args:
             anomaly_batch: Lista de tuplas (log_entry, score)
-            
+            use_evaluators: Si es True, usa evaluadores para mejorar la explicación
+            repetition_summary: Resumen de anomalías repetitivas
+
         Returns:
             Lista de explicaciones
         """
         try:
             if not anomaly_batch:
                 return []
-            
+
             logger.info(f"Procesando lote de {len(anomaly_batch)} anomalías con LLM")
-            
+
             # 1. Parsear todos los logs (responsabilidad delegada)
             parsed_anomalies = [
                 (self.log_parser.parse(log_entry), score)
                 for log_entry, score in anomaly_batch
             ]
-            
+
             # 2. Construir prompt de batch (responsabilidad delegada)
-            prompt = self.prompt_builder.build_batch_prompt(parsed_anomalies)
+            prompt = self.prompt_builder.build_batch_prompt(
+                parsed_anomalies,
+                repetition_summary=repetition_summary
+            )
             system_prompt = self.prompt_builder.get_system_prompt()
 
             # 3. Obtener cliente LLM con credenciales del workspace

@@ -45,6 +45,7 @@ class AnomalyResultV2(BaseModel):
     chunk_id: str
     detection_method: Optional[str] = None  # Método usado: qdrant_global, qdrant_job, isolation_forest
     severity: Optional[str] = "medium"  # Severidad clasificada por LLM: critical, high, medium, low
+    group_size: Optional[int] = None  # Tamaño del grupo de anomalías similares que esta representa
 
 class ChunkResult(BaseModel):
     chunk_id: str
@@ -63,6 +64,7 @@ class StatusResponseV2(BaseModel):
     job_id: str
     status: ProcessingStatus
     progress: float  # 0.0 a 1.0
+    chunk_progress: float  # Progreso del chunk actual (0-100)
     chunks_processed: int
     total_chunks: int
     anomalies_found: int

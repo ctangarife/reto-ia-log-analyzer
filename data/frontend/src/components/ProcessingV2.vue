@@ -3,12 +3,15 @@
     <div v-if="currentJob" class="job-status">
       <h3>Procesando: {{ currentJob.job_id }}</h3>
       <div class="progress-bar">
-        <div 
-          class="progress-fill" 
-          :style="{ width: `${currentJob.progress * 100}%` }"
+        <div
+          class="progress-fill"
+          :style="{ width: `${currentJob.chunk_progress || currentJob.progress * 100}%` }"
         ></div>
       </div>
-      <p>Progreso: {{ currentJob.chunks_processed }}/{{ currentJob.total_chunks }} chunks</p>
+      <p class="progress-info">
+        {{ currentJob.chunks_processed }}/{{ currentJob.total_chunks }} chunks •
+        Chunk actual: <strong>{{ Math.round(currentJob.chunk_progress || 0) }}%</strong>
+      </p>
       <p>Anomalías encontradas: {{ currentJob.anomalies_found }}</p>
       <p>Estado: {{ currentJob.status }}</p>
       

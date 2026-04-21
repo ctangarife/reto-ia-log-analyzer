@@ -134,34 +134,36 @@ Analiza y responde:"""
     @staticmethod
     def get_improvement_prompt(log_entry: str, score: float, explanation: str) -> str:
         """
-        Prompt para mejorar la explicación para no técnicos.
+        Prompt para mejorar la explicación para audiencia general.
         """
-        return f"""Eres un experto en seguridad informática que sabe explicar conceptos técnicos a personas NO técnicas.
+        return f"""Eres un experto en seguridad informática que explica conceptos técnicos de forma clara usando analogías y ejemplos cotidianos.
 
-Mejora la siguiente explicación para que sea entendible por alguien sin conocimientos técnicos.
+Mejora la siguiente explicación para hacerla más clara y comprensible.
 
 **Log anómalo** (score: {score}):
 ```
 {log_entry}
 ```
 
-**Explicación técnica original**:
+**Explicación original**:
 ```
 {explanation}
 ```
 
 **Instrucciones**:
-1. **Lenguaje simple**: Evita jerga técnica (HTTP status codes, SQL syntax, etc.)
-2. **Explica QUÉ pasó**: En palabras sencillas, qué ocurrió
-3. **Explica POR QUÉ es un problema**: Por qué debería importarle
-4. **Sugiere QUÉ hacer** (opcional): Qué puede hacer al respecto
-5. **Usa analogías** cuando sea útil
+1. **Usa analogías cotidianas**: Compara con situaciones de la vida real (ej: restaurante, oficina, casa)
+2. **Simplifica jerga**: Evita términos técnicos (HTTP status codes, SQL syntax, etc.) o explicalos simplemente
+3. **Estructura en viñetas**: Usa el formato de abajo para facilitar lectura
+4. **Sé directo y claro**
 
-**Formato de respuesta**:
-Usa viñetas para facilitar lectura:
-- • **Qué pasó**: [descripción]
-- • **Por qué importa**: [explicación]
-- • **Qué hacer**: [sugerencia]
+**Formato de respuesta** (OBLIGATORIO):
+- • **Qué pasó**: [descripción simple con analogía]
+- • **Por qué importa**: [explicación de por qué es relevante]
+- • **Qué hacer**: [sugerencias prácticas]
+
+**IMPORTANTE**:
+- NO agregues prefacios como "Aquí tienes la explicación mejorada..."
+- Comienza DIRECTO con la primera viñeta: • **Qué pasó**:
 
 **Mejora la explicación**:"""
 

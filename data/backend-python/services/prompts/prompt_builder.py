@@ -26,15 +26,15 @@ Responde en español de forma clara y directa."""
     def build_single_prompt(self, log_metadata: LogMetadata, score: float) -> str:
         """
         Construye un prompt para analizar una sola anomalía.
-        
+
         Args:
             log_metadata: Metadatos del log parseado
             score: Score de anomalía
-            
+
         Returns:
             Prompt formateado para el LLM
         """
-        prompt = f"""Eres un experto en análisis de logs de sistemas. Analiza este log y explica QUÉ ESTÁ PASANDO de manera simple y clara para una persona sin conocimientos técnicos.
+        prompt = f"""Eres un experto en análisis de logs de sistemas. Explica lo que está pasando usando analogías simples y ejemplos cotidianos.
 
 INFORMACIÓN DEL LOG:
 - Log: {log_metadata.raw_entry}
@@ -44,50 +44,57 @@ INFORMACIÓN DEL LOG:
 - Score de anomalía: {score:.3f}
 
 INSTRUCCIONES:
-1. Explica QUÉ está pasando en términos simples
-2. Explica POR QUÉ es un problema
+1. Explica QUÉ está pasando usando una analogía simple (ej: restaurante, casa, oficina)
+2. Explica POR QUÉ es importante
 3. Explica QUÉ puede pasar si no se soluciona
 4. Sugiere QUÉ hacer para solucionarlo
-5. Usa un lenguaje claro y comprensible para cualquier persona
-6. Máximo 3 oraciones, sé conciso pero informativo
+5. Sé conciso pero informativo
 
-FORMATO DE RESPUESTA:
-Problema: [Qué está pasando]
-Impacto: [Por qué es importante]
-Solución: [Qué hacer]
+FORMATO DE RESPUESTA (OBLIGATORIO):
+- • **Qué pasó**: [descripción con analogía]
+- • **Por qué importa**: [explicación]
+- • **Qué hacer**: [sugerencia]
 
 Ejemplo:
-Problema: El servidor web no puede comunicarse con la base de datos
-Impacto: Los usuarios no podrán acceder a la aplicación
-Solución: Verificar que la base de datos esté funcionando y revisar la configuración de conexión
+- • **Qué pasó**: Es como si la puerta del restaurante estuviera abierta pero el personal no puede entrar a la cocina
+- • **Por qué importa**: Los clientes hacen pedidos pero nunca llegan a prepararse
+- • **Qué hacer**: Verificar que el pasillo entre la puerta y la cocina esté desbloqueado
 
 ANALIZA ESTE LOG:"""
-        
+
         return prompt
     
     def build_batch_prompt(
-        self, 
-        anomalies: List[Tuple[LogMetadata, float]]
+        self,
+        anomalies: List[Tuple[LogMetadata, float]],
+        repetition_summary: str = ""
     ) -> str:
         """
         Construye un prompt para analizar múltiples anomalías.
-        
+
         Args:
             anomalies: Lista de tuplas (LogMetadata, score)
-            
+            repetition_summary: Resumen de anomalías repetitivas (opcional)
+
         Returns:
             Prompt formateado para el LLM
         """
-        prompt = f"""Eres un experto en análisis de logs. Analiza estas {len(anomalies)} anomalías y explica QUÉ ESTÁ PASANDO en cada una de manera simple y clara.
+        prompt = f"""Eres un experto en análisis de logs. Analiza estas {len(anomalies)} anomalías y explica QUÉ ESTÁ PASANDO en cada una de forma clara y directa.
 
 INSTRUCCIONES:
 1. Explica QUÉ está pasando en cada log
 2. Explica POR QUÉ es un problema
 3. Explica QUÉ puede pasar si no se soluciona
-4. Usa un lenguaje claro y comprensible
+4. Usa un lenguaje claro y accesible
 5. Máximo 3 oraciones por anomalía
 6. Sé conciso pero informativo
-7. Explica a una persona sin conocimientos técnicos
+
+IMPORTANTE - Anomalías Repetitivas:
+Si notas patrones que se repiten (como "workerEnv.init() ok" o "mod_jk child workerEnv in error state"):
+- Menciona explícitamente: "Este patrón se repite X veces en el log"
+- Da una sola explicación que aplique a todas las ocurrencias
+- Indica si es un problema recurrente o un evento único
+- No repitas la misma explicación para cada anomalía similar
 
 FORMATO DE RESPUESTA:
 Para cada anomalía, responde en una línea separada:
@@ -97,10 +104,14 @@ ANOMALÍA 3: [explicación]
 ...
 
 ANOMALÍAS A ANALIZAR:"""
-        
+
         for i, (log_metadata, score) in enumerate(anomalies, 1):
             prompt += f"\n\nANOMALÍA {i} (Score: {score:.3f}):\n{log_metadata.raw_entry}"
-        
+
+        # Agregar resumen de repeticiones si existe
+        if repetition_summary:
+            prompt += repetition_summary
+
         return prompt
     
     def get_system_prompt(self) -> str:

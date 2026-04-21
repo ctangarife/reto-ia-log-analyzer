@@ -29,15 +29,17 @@ class ChunkService:
 
         for line in lines:
             if len(current_chunk) + len(line) + 1 > self.chunk_size and current_chunk:
-                # Guardar chunk actual
-                chunk_data = ChunkData(
-                    file_id=file_id,
-                    chunk_number=chunk_number,
-                    data=current_chunk,
-                    size=len(current_chunk),
-                    processed=False
-                )
-                chunks.append(chunk_data.dict())
+                # Guardar chunk actual con _id explícito
+                chunk_id = str(uuid.uuid4())
+                chunk_data = {
+                    "_id": chunk_id,  # Usar _id explícito para consistencia
+                    "file_id": file_id,
+                    "chunk_number": chunk_number,
+                    "data": current_chunk,
+                    "size": len(current_chunk),
+                    "processed": False
+                }
+                chunks.append(chunk_data)
                 chunk_number += 1
                 current_chunk = line
             else:
@@ -45,14 +47,16 @@ class ChunkService:
 
         # Guardar último chunk si no está vacío
         if current_chunk:
-            chunk_data = ChunkData(
-                file_id=file_id,
-                chunk_number=chunk_number,
-                data=current_chunk,
-                size=len(current_chunk),
-                processed=False
-            )
-            chunks.append(chunk_data.dict())
+            chunk_id = str(uuid.uuid4())
+            chunk_data = {
+                "_id": chunk_id,  # Usar _id explícito para consistencia
+                "file_id": file_id,
+                "chunk_number": chunk_number,
+                "data": current_chunk,
+                "size": len(current_chunk),
+                "processed": False
+            }
+            chunks.append(chunk_data)
 
         # Guardar chunks en MongoDB
         if chunks:
@@ -85,16 +89,17 @@ class ChunkService:
     
     async def mark_chunk_processed(self, chunk_id: str, anomalies_count: int, processing_time: float):
         """Marca un chunk como procesado"""
-        from bson import ObjectId
-        
-        # Actualizar MongoDB
-        await db_manager.mongodb_client.logsanomaly.chunks.update_one(
-            {"_id": ObjectId(chunk_id)},
+        # Actualizar MongoDB - chunk_id ya es un string UUID, no necesita ObjectId()
+        result = await db_manager.mongodb_client.logsanomaly.chunks.update_one(
+            {"_id": chunk_id},
             {"$set": {"processed": True}}
         )
-        
+
+        if result.matched_count == 0:
+            print(f"⚠️  No se encontró chunk con _id={chunk_id} para marcar como procesado")
+
         # Obtener información del chunk para las estadísticas
-        chunk = await db_manager.mongodb_client.logsanomaly.chunks.find_one({"_id": ObjectId(chunk_id)})
+        chunk = await db_manager.mongodb_client.logsanomaly.chunks.find_one({"_id": chunk_id})
         
         if chunk:
             # Guardar estadísticas en PostgreSQL

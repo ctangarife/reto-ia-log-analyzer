@@ -118,7 +118,7 @@ class ChunkProcessor:
                 # Almacenar chunk en MongoDB
                 chunk_id = str(uuid.uuid4())
                 chunk_info = {
-                    "id": chunk_id,
+                    "_id": chunk_id,  # Usar _id directamente para consistencia
                     "job_id": job_id,
                     "chunk_number": chunk_number,
                     "data": chunk_data,
@@ -126,8 +126,8 @@ class ChunkProcessor:
                     "processed": False,
                     "created_at": datetime.utcnow()
                 }
-                
-                await self.mongodb.chunks.insert_one(chunk_info)
+
+                result = await self.mongodb.chunks.insert_one(chunk_info)
                 chunks_info.append(chunk_info)
                 chunk_number += 1
         

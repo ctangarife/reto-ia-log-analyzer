@@ -117,6 +117,10 @@
                 <span class="anomaly-number">Anomalía #{{ index + 1 }}</span>
                 <Tag :value="getAnomalySeverity(anomaly)" :severity="getSeverityClass(anomaly)" />
                 <span class="anomaly-score">{{ getAnomalyScore(anomaly) }}%</span>
+                <Tag v-if="anomaly.group_size && anomaly.group_size > 1"
+                     :value="`Se repite ${anomaly.group_size} veces`"
+                     severity="info"
+                     class="repeat-badge" />
               </div>
 
               <Divider />

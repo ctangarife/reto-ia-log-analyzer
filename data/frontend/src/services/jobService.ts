@@ -8,6 +8,19 @@ export interface JobResult {
   timestamp: string
 }
 
+export interface ActiveJob {
+  id: string
+  filename: string
+  total_size: number
+  total_chunks: number
+  chunks_processed: number
+  status: string
+  progress: number
+  started_at: string
+  elapsed_seconds: number
+  project_id: string | null
+}
+
 export interface DeleteResponse {
   message: string
   job_id: string
@@ -23,6 +36,12 @@ export interface ReanalyzeResponse {
 }
 
 export const jobService = {
+  async getActiveJobs(projectId?: string): Promise<ActiveJob[]> {
+    const params = projectId ? `?project_id=${projectId}` : ''
+    const response = await api.get(`/jobs/active${params}`)
+    return response.data
+  },
+
   async deleteJob(jobId: string): Promise<DeleteResponse> {
     const response = await api.delete(`/jobs/${jobId}`)
     return response.data

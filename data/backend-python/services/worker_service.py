@@ -21,12 +21,21 @@ from services.explanation_service import explanation_service
 from services import qdrant_service
 from services.embedding_service import generate_embeddings
 from services.format_detector import format_detector, FileFormat
+from services.log_analysis.log_grouper import (
+    group_similar_logs,
+    sample_representative_logs,
+    create_repetition_summary,
+    format_anomaly_groups_for_ui,
+    count_unique_patterns
+)
 
 class WorkerService:
     def __init__(self):
         self.max_workers = 1  # Limitar a un solo worker para evitar concurrencia
         self.workers = []
         self.current_processing_job = None  # Track del job actual
+        self.current_repetition_summary = ""  # Resumen de anomalías repetitivas
+        self.current_anomaly_groups = []  # Grupos de anomalías para mostrar en UI
 
         # Configuración de detección con embeddings
         self.similarity_threshold = float(os.getenv("ANOMALY_SIMILARITY_THRESHOLD", "0.4"))  # Logs con < 0.4 similitud son anomalías
@@ -318,7 +327,66 @@ class WorkerService:
             if normal_logs_batch:
                 await self._store_normal_logs_batch(normal_logs_batch, job_id)
 
-            # 3. Procesar anomalías en lotes con LLM (solo si hay anomalías)
+            # 3. Agrupar anomalías similares para evitar explicaciones redundantes
+            if anomaly_lines:
+                # Extraer solo las líneas de log para agrupación
+                anomaly_log_lines = [anomaly[0] for anomaly, _ in anomaly_lines]
+
+                # Calcular estadísticas de repetición
+                total_logs, unique_patterns = count_unique_patterns(anomaly_log_lines)
+                print(f"📊 Análisis de repeticiones: {total_logs} logs, {unique_patterns} patrones únicos")
+
+                # Agrupar logs similares
+                anomaly_groups = group_similar_logs(
+                    anomaly_log_lines,
+                    similarity_threshold=0.85,  # 85% de similitud
+                    min_group_size=1
+                )
+
+                if anomaly_groups:
+                    print(f"🔀 Se agruparon {len(anomaly_log_lines)} anomalías en {len(anomaly_groups)} grupos únicos")
+
+                    # Crear resumen de repeticiones para el prompt
+                    repetition_summary = create_repetition_summary(anomaly_groups)
+
+                    # Usar logs representativos para procesamiento con LLM
+                    representative_logs = sample_representative_logs(
+                        anomaly_groups,
+                        max_samples_per_group=3,
+                        max_total_samples=100
+                    )
+
+                    # Reconstruir anomaly_lines con representantes
+                    # Mapear representantes a sus datos originales y al tamaño del grupo
+                    representative_anomalies = []
+                    representative_set = set(representative_logs)
+                    # Crear mapeo de log al tamaño de su grupo
+                    log_to_group_size = {}
+
+                    for anomaly, similar_logs in anomaly_lines:
+                        if anomaly[0] in representative_set:
+                            representative_anomalies.append((anomaly, similar_logs))
+
+                    # Crear mapeo de logs representativos al tamaño de su grupo
+                    for pattern, group_data in anomaly_groups.items():
+                        for log in group_data["logs"]:
+                            log_to_group_size[log] = group_data["count"]
+
+                    print(f"📉 Reducido de {len(anomaly_lines)} a {len(representative_anomalies)} anomalías representativas")
+
+                    # Reemplazar anomaly_lines con representantes
+                    anomaly_lines = representative_anomalies
+
+                    # Guardar mapeo de group_size para usar después
+                    self.current_group_size_map = log_to_group_size
+                    self.current_anomaly_groups = format_anomaly_groups_for_ui(anomaly_groups)
+                    self.current_repetition_summary = repetition_summary
+                else:
+                    print("ℹ️  No se detectaron grupos de anomalías similares")
+                    self.current_repetition_summary = ""
+                    self.current_anomaly_groups = []
+
+            # 4. Procesar anomalías en lotes con LLM (solo si hay anomalías)
             if anomaly_lines:
                 # Limitar anomalías del batch para evitar colapso
                 remaining_anomalies = max_anomalies_per_chunk - total_anomalies_processed
@@ -332,25 +400,43 @@ class WorkerService:
 
                 for j in range(0, len(anomaly_lines), llm_batch_size):
                     llm_batch = anomaly_lines[j:j + llm_batch_size]
-                    print(f"Procesando lote {j//llm_batch_size + 1} de {len(llm_batch)} anomalías")
+                    print(f"Procesando lote {j//llm_batch_size + 1} de {(len(anomaly_lines) + llm_batch_size - 1)//llm_batch_size} anomalías representativas")
 
-                    # Extraer (line, score, detection_method) para cada anomalía
-                    # similar_logs se usa para contexto
+                    # Extraer (line, score, detection_method, similar_logs) para cada anomalía representativa
                     anomaly_info_list = []
                     llm_input = []
-                    for anomaly_data, similar_logs in llm_batch:
-                        # anomaly_data ahora es (line, score, detection_method)
-                        line = anomaly_data[0]
-                        score = anomaly_data[1]
-                        detection_method = anomaly_data[2] if len(anomaly_data) > 2 else "unknown"
+                    for anomaly_item in llm_batch:
+                        # anomaly_item puede ser:
+                        # - [(line, score, detection_method), similar_logs] (después de agrupar)
+                        # - (line, score, detection_method) (sin agrupar)
+                        if isinstance(anomaly_item, tuple) and len(anomaly_item) == 2 and isinstance(anomaly_item[1], list):
+                            # Caso con agrupamiento: [(line, score, detection_method), similar_logs]
+                            anomaly_data, similar_logs = anomaly_item
+                            line = anomaly_data[0]
+                            score = anomaly_data[1]
+                            detection_method = anomaly_data[2] if len(anomaly_data) > 2 else "unknown"
+                        else:
+                            # Caso sin agrupamiento: (line, score, detection_method)
+                            if len(anomaly_item) == 3:
+                                line, score, detection_method = anomaly_item
+                            else:
+                                line, score = anomaly_item[0], anomaly_item[1]
+                                detection_method = "unknown"
+                            similar_logs = None
+
                         anomaly_info_list.append((line, score, detection_method, similar_logs))
                         llm_input.append((line, score))
 
-                    # Obtener explicaciones para todo el lote de una vez
-                    explanations = await explanation_service.get_batch_explanations(llm_input)
+                    # Obtener explicaciones para todo el lote de una vez (SIN evaluadores para velocidad)
+                    # Los evaluadores se ejecutarán al final solo sobre anomalías representativas
+                    explanations = await explanation_service.get_batch_explanations(
+                        llm_input,
+                        use_evaluators=False,  # Desactivado durante detección
+                        repetition_summary=self.current_repetition_summary
+                    )
                     print(f"Explicaciones obtenidas: {len(explanations)}")
 
-                    # Crear resultados para cada anomalía
+                    # Crear resultados para cada anomalía representativa
                     for anomaly_info, explanation in zip(anomaly_info_list, explanations):
                         # anomaly_info es (line, score, detection_method, similar_logs)
                         line = anomaly_info[0]
@@ -361,10 +447,18 @@ class WorkerService:
                         # Generar ID único para la anomalía
                         anomaly_id = str(uuid.uuid4())
 
-                        # Agregar contexto de logs similares a la explicación
+                        # Calcular conteo total de anomalías representadas usando el mapeo de grupos
+                        group_count = 1
+                        if hasattr(self, 'current_group_size_map') and line in self.current_group_size_map:
+                            group_count = self.current_group_size_map[line]
+                        elif similar_logs and len(similar_logs) > 0:
+                            # Fallback al método anterior
+                            group_count = len(similar_logs) + 1 if isinstance(similar_logs[0], dict) else 2
+
+                        # Agregar contexto de agrupamiento a la explicación
                         context_note = ""
-                        if similar_logs:
-                            context_note = f"\n\n[Contexto: Se encontraron {len(similar_logs)} logs normales similares con score máximo de {max(l['similarity_score'] for l in similar_logs):.2f}]"
+                        if group_count > 1:
+                            context_note = f"\n\n[⚠️ Este patrón se repite {group_count} veces en el log. Esta explicación aplica a todas las ocurrencias.]"
 
                         # Agregar información del método de detección
                         method_note = f"\n\n[Método de detección: {detection_method}]"
@@ -390,15 +484,16 @@ class WorkerService:
                             explanation=enhanced_explanation,
                             chunk_id=chunk_id,
                             detection_method=detection_method,
-                            severity="medium"  # Default, se puede mejorar con evaluadores individualmente
+                            severity="medium",  # Default, se puede mejorar con evaluadores individualmente
+                            group_size=group_count  # Campo adicional para tracking
                         )
                         batch_anomalies.append(anomaly_result)
                         anomalies.append(anomaly_result)
 
-                        # Almacenar anomalía en Qdrant para correlación futura
+                        # Almacenar solo la anomalía representativa en Qdrant
                         await self._store_anomaly_in_qdrant(line, score, anomaly_id, job_id)
 
-                    print(f"Lote procesado, total anomalías: {len(anomalies)}")
+                    print(f"Lote procesado, total anomalías representativas: {len(anomaly_info_list)}, representando {sum(a.group_size for a in batch_anomalies)} anomalías totales")
 
                 total_anomalies_processed += len(anomaly_lines)
             else:
@@ -407,8 +502,10 @@ class WorkerService:
             # 4. Guardar batch inmediatamente para evitar pérdida de datos
             if batch_anomalies:
                 print(f"Guardando {len(batch_anomalies)} anomalías del batch en MongoDB")
+                # Usar job_id como prefijo del chunk_id para que el /status pueda encontrarlo
+                chunk_id_with_prefix = f"{job_id}_{chunk_id}" if job_id else chunk_id
                 batch_result = ChunkResult(
-                    chunk_id=chunk_id,
+                    chunk_id=chunk_id_with_prefix,
                     anomalies=batch_anomalies,
                     processing_time=time.time() - start_time
                 )
@@ -418,7 +515,16 @@ class WorkerService:
             # 4. Publicar progreso del batch si hay job_id (para streaming en UI)
             if job_id and batch_anomalies:
                 await self._publish_batch_progress(job_id, chunk_id, batch_anomalies, processed_lines, total_lines)
-            
+
+            # Publicar progreso del chunk actual en Redis (para progress bar visual)
+            if job_id:
+                chunk_progress = (processed_lines / total_lines * 100) if total_lines > 0 else 0
+                await db_manager.redis_client.setex(
+                    f"chunk_progress:{job_id}",
+                    300,  # Expira en 5 minutos
+                    json.dumps({"progress": chunk_progress, "processed_lines": processed_lines, "total_lines": total_lines})
+                )
+
             # Pequeña pausa para permitir streaming
             await asyncio.sleep(0.1)
         
@@ -500,7 +606,12 @@ class WorkerService:
                 
                 # Publicar progreso del chunk
                 await self._publish_chunk_progress(file_id, i+1, len(chunks))
-            
+
+            # === FASE DE EVALUACIÓN FINAL ===
+            # Obtener anomalías representativas para evaluación
+            print(f"\n🎯 Iniciando evaluación final de anomalías representativas...")
+            await self._run_final_evaluation(file_id)
+
             # Actualizar estado del job a completado
             await self._update_job_status(file_id, "completed")
 
@@ -597,5 +708,197 @@ class WorkerService:
                 print(f"Estado del job {file_id} actualizado a {status}")
         except Exception as e:
             print(f"Error actualizando estado del job: {e}")
+
+    async def _run_final_evaluation(self, file_id: str):
+        """
+        Ejecuta la evaluación final de anomalías representativas.
+
+        Este proceso:
+        1. Obtiene todas las anomalías del job completado
+        2. Agrupa anomalías similares (evita redundancia)
+        3. Selecciona anomalías representativas (~7-10 en lugar de 100+)
+        4. Envía lotes a evaluadores para validar/mejorar explicaciones
+        5. Actualiza las explicaciones en MongoDB con las versiones mejoradas
+
+        Args:
+            file_id: ID del job (UUID) que se acaba de completar
+        """
+        try:
+            print(f"\n{'='*60}")
+            print(f"🎯 FASE DE EVALUACIÓN FINAL - Job: {file_id}")
+            print(f"{'='*60}\n")
+
+            # Obtener project_id y workspace_id del job
+            project_id = None
+            workspace_id = None
+
+            async with db_manager.postgres_pool.acquire() as conn:
+                job = await conn.fetchrow("""
+                    SELECT project_id FROM processing.processing_jobs
+                    WHERE id = $1
+                """, file_id)
+
+                if job and job.get('project_id'):
+                    project_id = job['project_id']
+                    project = await conn.fetchrow("""
+                        SELECT workspace_id FROM auth.projects
+                        WHERE id = $1
+                    """, project_id)
+                    workspace_id = str(project['workspace_id']) if project else None
+
+            if not workspace_id:
+                print(f"⚠️  No se encontró workspace_id para el job {file_id}, saltando evaluación")
+                return
+
+            print(f"📋 Workspace ID: {workspace_id}")
+
+            # 1. Obtener todas las anomalías del job desde MongoDB
+            print(f"📊 Obteniendo anomalías del job...")
+
+            results = await db_manager.mongodb_client.logsanomaly.results.find({
+                "chunk_id": {"$regex": f"^{file_id}"}
+            }).to_list(length=None)
+
+            if not results:
+                print(f"ℹ️  No hay resultados para evaluar en job {file_id}")
+                return
+
+            # Extraer todas las anomalías
+            all_anomalies = []
+            for result in results:
+                if "anomalies" in result:
+                    all_anomalies.extend(result["anomalies"])
+
+            total_anomalies = len(all_anomalies)
+            print(f"📈 Total de anomalías detectadas: {total_anomalies}")
+
+            if total_anomalies == 0:
+                print(f"ℹ️  No hay anomalías para evaluar")
+                return
+
+            # 2. Agrupar anomalías similares
+            print(f"\n🔄 Agrupando anomalías similares...")
+
+            anomaly_logs = [anomaly["log_entry"] for anomaly in all_anomalies]
+
+            grouped_anomalies = group_similar_logs(
+                anomaly_logs,
+                similarity_threshold=0.90,  # 90% similitud para agrupar
+                min_group_size=1  # Incluir grupos de tamaño 1 también
+            )
+
+            total_groups = len(grouped_anomalies)
+            reduction_pct = ((total_anomalies - total_groups) / total_anomalies * 100) if total_anomalies > 0 else 0
+
+            print(f"✅ Agrupamiento completo:")
+            print(f"   - Anomalías originales: {total_anomalies}")
+            print(f"   - Grupos únicos: {total_groups}")
+            print(f"   - Reducción: {reduction_pct:.1f}%")
+
+            # 3. Seleccionar anomalías representativas
+            print(f"\n🎯 Seleccionando anomalías representativas...")
+
+            representative_logs = sample_representative_logs(
+                grouped_anomalies,
+                max_samples_per_group=1,  # 1 por grupo
+                max_total_samples=10  # Máximo 10 muestras
+            )
+
+            print(f"✅ Seleccionaron {len(representative_logs)} anomalías representativas")
+
+            # 4. Crear mapa de log_entry -> anomalía completa para actualizar después
+            log_to_anomaly = {}
+            for anomaly in all_anomalies:
+                log_entry = anomaly["log_entry"]
+                if log_entry not in log_to_anomaly:
+                    log_to_anomaly[log_entry] = anomaly
+
+            # 5. Procesar evaluación en lotes
+            from services.evaluator.evaluator_service import EvaluatorService
+            evaluator_service = EvaluatorService(workspace_id=workspace_id)
+
+            BATCH_SIZE = 5  # Evaluar 5 anomalías a la vez
+            improved_explanations = {}  # {log_entry: improved_explanation}
+
+            for i in range(0, len(representative_logs), BATCH_SIZE):
+                batch = representative_logs[i:i + BATCH_SIZE]
+                batch_num = (i // BATCH_SIZE) + 1
+                total_batches = (len(representative_logs) + BATCH_SIZE - 1) // BATCH_SIZE
+
+                print(f"\n📦 Procesando lote {batch_num}/{total_batches} ({len(batch)} anomalías)...")
+
+                for log_entry in batch:
+                    anomaly = log_to_anomaly.get(log_entry)
+                    if not anomaly:
+                        continue
+
+                    print(f"   → Evaluando: {log_entry[:60]}...")
+
+                    try:
+                        # Evaluar explicación con evaluadores
+                        evaluation_result = await evaluator_service.evaluate_explanation(
+                            log_entry=anomaly["log_entry"],
+                            score=anomaly.get("score", 0.0),
+                            initial_explanation=anomaly.get("explanation", ""),
+                            job_id=f"{file_id}_eval"
+                        )
+
+                        # Extraer explicación mejorada y severidad
+                        improved_explanation = evaluation_result.get("explanation", anomaly.get("explanation", ""))
+                        severity = evaluation_result.get("severity", "medium")
+
+                        improved_explanations[log_entry] = {
+                            "explanation": improved_explanation,
+                            "severity": severity
+                        }
+
+                        print(f"      ✅ Explicación mejorada (severidad: {severity})")
+
+                    except Exception as e:
+                        print(f"      ⚠️  Error en evaluación: {e}")
+                        # Mantener explicación original en caso de error
+                        improved_explanations[log_entry] = {
+                            "explanation": anomaly.get("explanation", ""),
+                            "severity": "medium"
+                        }
+
+                # Pequeña pausa entre lotes para no saturar los servicios
+                if i + BATCH_SIZE < len(representative_logs):
+                    await asyncio.sleep(0.5)
+
+            # 6. Actualizar anomalías en MongoDB con explicaciones mejoradas
+            print(f"\n💾 Actualizando {len(improved_explanations)} anomalías en MongoDB...")
+
+            updates = 0
+            for result in results:
+                result_updated = False
+                for anomaly in result.get("anomalies", []):
+                    log_entry = anomaly["log_entry"]
+
+                    # Si esta anomalía fue evaluada, actualizarla
+                    if log_entry in improved_explanations:
+                        anomaly["explanation"] = improved_explanations[log_entry]["explanation"]
+                        anomaly["severity"] = improved_explanations[log_entry]["severity"]
+                        result_updated = True
+
+                # Si el resultado fue modificado, actualizarlo en MongoDB
+                if result_updated:
+                    await db_manager.mongodb_client.logsanomaly.results.update_one(
+                        {"_id": result["_id"]},
+                        {"$set": {"anomalies": result["anomalies"]}}
+                    )
+                    updates += 1
+
+            print(f"✅ Actualizaciones completadas:")
+            print(f"   - Documentos actualizados: {updates}")
+            print(f"   - Explicaciones mejoradas: {len(improved_explanations)}")
+            print(f"\n{'='*60}")
+            print(f"🎉 EVALUACIÓN FINAL COMPLETADA")
+            print(f"{'='*60}\n")
+
+        except Exception as e:
+            print(f"❌ Error en evaluación final: {e}")
+            import traceback
+            traceback.print_exc()
 
 worker_service = WorkerService()
