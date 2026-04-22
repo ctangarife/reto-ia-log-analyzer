@@ -178,7 +178,8 @@ services:
     image: docker.io/library/nginx:stable-alpine
     container_name: logs-analyze-nginx
     ports:
-      - "8080:80"    # Puerto 80 externo requiere root, usamos 8080
+      - "80:80"    # Puerto 80 externo requiere root, usamos 8080
+      - "443:443"
       - "8081:8080"  # Health check interno
     volumes:
       # Montar configuraciones de nginx
