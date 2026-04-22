@@ -70,6 +70,14 @@ async def get_exercises(
     logger = logging.getLogger(__name__)
     logger.info(f"get_exercises called: project_id={project_id}, lesson_id={lesson_id}, count={count}, user_id={current_user.user_id}")
     try:
+        # DEBUG: Verificar qué hay en la lección
+        async with db_manager.postgres_pool.acquire() as conn:
+            lesson = await conn.fetchrow(
+                "SELECT id, title, exercise_data FROM learning.course_lessons WHERE id = $1",
+                lesson_id
+            )
+            logger.info(f"DEBUG lesson: id={lesson['id'] if lesson else 'NOT FOUND'}, title={lesson.get('title') if lesson else 'N/A'}, exercise_data={lesson.get('exercise_data') if lesson else 'N/A'}")
+
         exercises = await course_service.get_project_exercises(
             current_user.user_id, project_id, lesson_id, count
         )

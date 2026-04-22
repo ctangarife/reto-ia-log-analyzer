@@ -259,51 +259,133 @@ class CourseService:
             exercises = []
 
             if exercise_type == "project_anomalies":
-                # Get chunks from MongoDB for these file_ids
-                chunks = await db_manager.mongodb_db["chunks"].find({
-                    "file_id": {"$in": file_ids}
-                }).to_list(length=100)
+                # Use aggregation pipeline to match results with chunks
+                # NOTA: chunk_id en results tiene formato "job_id_chunk_id"
+                # SOLUCIÓN: Usar $sample para obtener documentos DIFERENTES
+                pipeline = [
+                    {
+                        "$addFields": {
+                            "pure_chunk_id": {
+                                "$arrayElemAt": [
+                                    {"$split": ["$chunk_id", "_"]},
+                                    -1  # Tomar el último elemento después del último "_"
+                                ]
+                            }
+                        }
+                    },
+                    {
+                        "$lookup": {
+                            "from": "chunks",
+                            "localField": "pure_chunk_id",
+                            "foreignField": "_id",
+                            "as": "chunk"
+                        }
+                    },
+                    {"$unwind": "$chunk"},
+                    {"$match": {"chunk.file_id": {"$in": file_ids}}},
+                    {"$match": {"anomalies": {"$exists": True, "$ne": None}}},
+                    {"$sample": {"size": count * 5}}  # Obtener documentos aleatorios (oversample)
+                ]
 
-                chunk_ids = [str(c.get("_id", "")) for c in chunks]
+                # Agrupar por documento para tomar SOLO UNA anomalía por documento
+                seen_doc_ids = set()
+                async for doc in db_manager.mongodb_db["results"].aggregate(pipeline):
+                    doc_id = str(doc.get("_id", ""))
+                    if doc_id in seen_doc_ids:
+                        continue  # Ya tenemos una anomalía de este documento
+                    seen_doc_ids.add(doc_id)
 
-                # Get results from MongoDB
-                cursor = db_manager.mongodb_db["results"].find({
-                    "chunk_id": {"$in": chunk_ids}
-                })
+                    # Obtener la primera anomalía del documento
+                    anomalies = doc.get("anomalies", [])
+                    if not anomalies:
+                        continue
 
-                async for result in cursor:
-                    anomalies_list = result.get("anomalies", [])
-                    for anomaly in anomalies_list:
-                        if anomaly.get("is_anomaly") == True:
-                            exercises.append({
-                                "anomaly_id": str(result.get("_id", "")) + "-" + str(anomaly.get("chunk_id", "")),
-                                "log_entry": anomaly.get("log_entry", ""),
-                                "score": anomaly.get("score", 0),
-                                "explanation": anomaly.get("explanation", "")
-                            })
-                            if len(exercises) >= count:
-                                break
+                    # anomalies puede ser una lista o un dict
+                    anomaly = anomalies[0] if isinstance(anomalies, list) else anomalies
+
+                    if not anomaly.get("is_anomaly"):
+                        continue
+
+                    exercises.append({
+                        "anomaly_id": doc_id,  # Usar solo el _id del documento (es único)
+                        "log_entry": anomaly.get("log_entry", ""),
+                        "score": anomaly.get("score", 0),
+                        "explanation": anomaly.get("explanation", "")
+                    })
+
                     if len(exercises) >= count:
                         break
 
-            elif exercise_type == "final_exam":
-                # Get diverse anomalies for final exam from MongoDB
-                cursor = db_manager.mongodb_db["results"].find({
-                    "chunk_id": {"$in": await self._get_chunk_ids_for_project(file_ids)}
-                })
+                logger.info(f"get_project_exercises: returning {len(exercises)} exercises")
 
-                async for result in cursor:
-                    anomalies_list = result.get("anomalies", [])
-                    for anomaly in anomalies_list:
-                        if anomaly.get("is_anomaly") == True:
-                            exercises.append({
-                                "anomaly_id": str(result.get("_id", "")) + "-" + str(anomaly.get("chunk_id", "")),
-                                "log_entry": anomaly.get("log_entry", ""),
-                                "score": anomaly.get("score", 0),
-                                "explanation": anomaly.get("explanation", "")
-                            })
-                            if len(exercises) >= count:
-                                break
+            elif exercise_type == "final_exam":
+                # Use aggregation pipeline for final exam too
+                # FILTRO: Solo anomalías con explicaciones LLM válidas
+                # SOLUCIÓN: Usar $sample para obtener documentos DIFERENTES
+                pipeline = [
+                    {
+                        "$addFields": {
+                            "pure_chunk_id": {
+                                "$arrayElemAt": [
+                                    {"$split": ["$chunk_id", "_"]},
+                                    -1
+                                ]
+                            }
+                        }
+                    },
+                    {
+                        "$lookup": {
+                            "from": "chunks",
+                            "localField": "pure_chunk_id",
+                            "foreignField": "_id",
+                            "as": "chunk"
+                        }
+                    },
+                    {"$unwind": "$chunk"},
+                    {"$match": {"chunk.file_id": {"$in": file_ids}}},
+                    {"$match": {"anomalies": {"$exists": True, "$ne": None}}},
+                    {"$sample": {"size": count * 10}}  # Oversample para tener suficientes después del filtro
+                ]
+
+                # Agrupar por documento para tomar SOLO UNA anomalía por documento
+                seen_doc_ids = set()
+                async for doc in db_manager.mongodb_db["results"].aggregate(pipeline):
+                    doc_id = str(doc.get("_id", ""))
+                    if doc_id in seen_doc_ids:
+                        continue  # Ya tenemos una anomalía de este documento
+                    seen_doc_ids.add(doc_id)
+
+                    # Obtener anomalías del documento
+                    anomalies_list = doc.get("anomalies", [])
+                    if not anomalies_list:
+                        continue
+
+                    # Buscar la primera anomalía válida
+                    for anomaly in (anomalies_list if isinstance(anomalies_list, list) else [anomalies_list]):
+                        if not anomaly.get("is_anomaly"):
+                            continue
+
+                        explanation = anomaly.get("explanation", "")
+
+                        # Filtrar explicaciones inválidas
+                        if "keyword_analysis" in explanation.lower():
+                            continue
+                        if explanation.startswith("Anomalía detectada - análisis detallado no disponible"):
+                            continue
+                        if "⚠️ Este patrón se repite" in explanation:
+                            continue
+                        if len(explanation) < 100:
+                            continue
+
+                        # Anomalía válida encontrada
+                        exercises.append({
+                            "anomaly_id": doc_id,  # Usar solo el _id del documento
+                            "log_entry": anomaly.get("log_entry", ""),
+                            "score": anomaly.get("score", 0),
+                            "explanation": explanation
+                        })
+                        break  # Solo una anomalía por documento
+
                     if len(exercises) >= count:
                         break
 
@@ -319,7 +401,13 @@ class CourseService:
             return []
 
     async def _get_chunk_ids_for_project(self, file_ids: list) -> list:
-        """Helper to get chunk_ids for given file_ids"""
+        """
+        Helper to get chunk_ids for given file_ids
+
+        DEPRECATED: This method is no longer used because chunk_id in results
+        collection has format "job_id_chunk_id" which doesn't match _id in chunks.
+        Use aggregation pipeline with $split and $lookup instead.
+        """
         chunks = await db_manager.mongodb_db["chunks"].find({
             "file_id": {"$in": file_ids}
         }).to_list(length=500)
@@ -598,7 +686,7 @@ class CourseService:
 
                         # Infer correct type and severity from log entry and score
                         correct_type = self._infer_anomaly_type_from_log(log_entry)
-                        correct_severity = self._infer_severity_from_score(score)
+                        correct_severity = self._infer_severity_with_context(score, log_entry)
 
                         # Score user's answer
                         points = 0
@@ -724,6 +812,68 @@ class CourseService:
             return "Medium"
         else:
             return "Low"
+
+    def _infer_severity_with_context(self, score: float, log_entry: str) -> str:
+        """
+        Infer severity combining Isolation Forest score with log context.
+
+        HOTFIX: Security anomalies (auth failures) are underestimated by Isolation Forest.
+        This adds context-aware severity adjustment for security events.
+        """
+        # First, get base severity from score
+        if score <= -0.6:
+            return "Crítica"
+        elif score <= -0.3:
+            return "Alta"
+        elif score <= -0.1:
+            base_severity = "Media"
+        else:
+            base_severity = "Baja"
+
+        # HOTFIX: Security context adjustments
+        log_lower = log_entry.lower()
+
+        # Critical security indicators
+        critical_indicators = [
+            "root",  # root account failures
+            "brute.force", "bruteforce", "dictionary attack",  # Attack patterns
+            "injection", "xss", "csrf", "rce",  # Exploits
+            "malware", "virus", "trojan", "ransomware"  # Malware
+        ]
+
+        # High security indicators
+        high_indicators = [
+            "authentication error",
+            "auth failed",
+            "login failed",
+            "unauthorized",
+            "forbidden",
+            "no active session",
+            "user not found",
+            "could not authenticate"
+        ]
+
+        # Check for critical indicators
+        if any(indicator in log_lower for indicator in critical_indicators):
+            # If it's critical context, upgrade severity
+            if base_severity == "Media":
+                return "Alta"
+            elif base_severity == "Baja":
+                return "Media"
+            return base_severity
+
+        # Check for high indicators (auth failures from external IPs)
+        if any(indicator in log_lower for indicator in high_indicators):
+            # External IP pattern (xxx.xxx.xxx.xxx)
+            import re
+            if re.search(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}', log_entry):
+                # Auth failure from external IP
+                if base_severity == "Baja":
+                    return "Media"
+                elif base_severity == "Media":
+                    return "Alta"
+
+        return base_severity
 
 
 # Singleton instance

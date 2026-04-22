@@ -594,7 +594,7 @@ En este proyecto se han detectado **{analysis.total_anomalies} anomalías**. Apr
     ) -> int:
         """
         Create Module 3: Análisis Práctico
-        Real anomaly examples from the project
+        Real anomaly examples from the project with TYPE VARIETY
         """
         module_id = await conn.fetchval("""
             INSERT INTO learning.course_modules
@@ -604,11 +604,11 @@ En este proyecto se han detectado **{analysis.total_anomalies} anomalías**. Apr
         """, course_id, module_order, "Análisis Práctico",
            "Casos reales de anomalías detectadas en tu proyecto con análisis detallado.")
 
-        # Get sample anomalies from MongoDB
-        sample_anomalies = await self._get_sample_anomalies(project_id, count=8)
+        # Get more anomalies to ensure variety, then filter by type
+        all_anomalies = await self._get_sample_anomalies(project_id, count=50)  # Get more to filter
 
         lesson_count = 0
-        if not sample_anomalies:
+        if not all_anomalies:
             # Create a default lesson when no anomalies are available
             content = """# Análisis de Anomalías
 
@@ -631,7 +631,27 @@ Cuando se generen anomalías, podrás:
             """, module_id, 1, "Análisis de Anomalías", content)
             lesson_count = 1
         else:
-            for idx, anomaly in enumerate(sample_anomalies, 1):
+            # Filter to ensure variety: max 2 per type, then randomize
+            import random
+            random.shuffle(all_anomalies)
+
+            # Group by type and select max 2 from each
+            type_counts = {"Seguridad": 0, "Performance": 0, "Red": 0, "Comportamiento": 0, "General": 0}
+            selected_anomalies = []
+
+            for anomaly in all_anomalies:
+                anomaly_type = anomaly.get("type", "General")
+                if type_counts.get(anomaly_type, 0) < 2:  # Max 2 per type
+                    selected_anomalies.append(anomaly)
+                    type_counts[anomaly_type] = type_counts.get(anomaly_type, 0) + 1
+
+                if len(selected_anomalies) >= 8:
+                    break
+
+            # Sort by type for organization, then by score
+            selected_anomalies.sort(key=lambda x: (x.get("type", "General"), x.get("score", 0)))
+
+            for idx, anomaly in enumerate(selected_anomalies, 1):
                 content = self._generate_practical_lesson_content(anomaly, idx)
                 await conn.execute("""
                     INSERT INTO learning.course_lessons
@@ -680,11 +700,11 @@ Cuando se generen anomalías, podrás:
 
         # Generate unique questions for each anomaly using LLM
         for idx, anomaly in enumerate(eval_anomalies, 1):
-            anomaly_type = self._infer_anomaly_type(anomaly)
-            anomaly_score = anomaly.get("anomaly_score", 0.5)
+            anomaly_type = anomaly.get("type", self._infer_anomaly_type(anomaly))
+            anomaly_score = anomaly.get("score", 0.5)
             chunk_id = anomaly.get("chunk_id", "unknown")
-            log_entry = anomaly.get("log_entry", anomaly.get("log_line", ""))
-            explanation = anomaly.get("anomalies", {}).get("explanation", "")
+            log_entry = anomaly.get("log_entry", "")
+            explanation = anomaly.get("explanation", "")
 
             # Determine severity level
             if anomaly_score > 0.7:
@@ -961,6 +981,7 @@ Responde SOLO en formato JSON:
 
             # Pipeline para obtener solo datos ESPECÍFICOS de las top anomalías
             # NO usamos $$ROOT, solo los campos necesarios
+            # FILTRO: Solo anomalías con explicaciones LLM válidas
             pipeline_samples = [
                 {
                     "$addFields": {
@@ -985,8 +1006,17 @@ Responde SOLO en formato JSON:
                 {"$match": {"anomalies": {"$exists": True, "$ne": None}}},
                 {"$unwind": "$anomalies"},
                 {"$match": {"anomalies.is_anomaly": True}},
+                {
+                    "$match": {
+                        "anomalies.explanation": {
+                            "$not": {
+                                "$regex": "^(Anomalía detectada - análisis detallado no disponible|Método de detección: keyword_analysis|⚠️ Este patrón se repite)"
+                            }
+                        }
+                    }
+                },
                 {"$sort": {"anomalies.score": 1}},
-                {"$limit": 50},  # Solo 50, solo necesitamos top 5 para mostrar
+                {"$limit": 100},  # Get more to filter in Python
                 {
                     "$project": {
                         "_id": 1,
@@ -1008,8 +1038,14 @@ Responde SOLO en formato JSON:
                 break
 
             # Obtener samples uno por uno para agruparlos en Python
+            # Filtrar para solo incluir anomalías con explicaciones válidas
             async for doc in db_manager.mongodb_db["results"].aggregate(pipeline_samples):
-                anomalies_list.append(doc)
+                anomaly = doc.get("anomalies", {})
+                explanation = anomaly.get("explanation", "")
+
+                # Doble check: explicación debe tener contenido significativo
+                if len(explanation) >= 100 and "keyword_analysis" not in explanation.lower():
+                    anomalies_list.append(doc)
 
             if not stats_result:
                 return {"total": 0, "categories": {}, "severity": {}, "top_anomalies": []}
@@ -1122,6 +1158,7 @@ Responde SOLO en formato JSON:
 
             # Pipeline simplificado para extraer chunk_id puro
             # NOTA: chunk_id en results tiene formato "job_id_chunk_id"
+            # FILTRO: Solo anomalías con explicaciones LLM válidas
             pipeline = [
                 {
                     "$addFields": {
@@ -1146,9 +1183,18 @@ Responde SOLO en formato JSON:
                 {"$match": {"anomalies": {"$exists": True, "$ne": None}}},
                 {"$unwind": "$anomalies"},
                 {"$match": {"anomalies.is_anomaly": True}},
+                {
+                    "$match": {
+                        "anomalies.explanation": {
+                            "$not": {
+                                "$regex": "^(Anomalía detectada - análisis detallado no disponible|Método de detección: keyword_analysis|⚠️ Este patrón se repite)"
+                            }
+                        }
+                    }
+                },
                 {"$sort": {"anomalies.score": 1}},  # Sort by score ascending (most anomalous first)
                 {"$skip": offset},
-                {"$limit": count}
+                {"$limit": count * 3}  # Get more to filter in Python
             ]
 
             samples = []
@@ -1159,6 +1205,10 @@ Responde SOLO en formato JSON:
                 log_entry = anomaly.get("log_entry", "")
                 explanation = anomaly.get("explanation", "")
                 score = anomaly.get("score", 0)
+
+                # Doble check: explicación debe tener contenido significativo del LLM
+                if len(explanation) < 100 or "keyword_analysis" in explanation.lower():
+                    continue
 
                 # Crear contenido enriquecido
                 sample = {
@@ -1173,6 +1223,9 @@ Responde SOLO en formato JSON:
                     "is_anomaly": anomaly.get("is_anomaly", True)
                 }
                 samples.append(sample)
+
+                if len(samples) >= count:
+                    break
 
             logger.info(f"Found {len(samples)} sample anomalies for project {project_id} (requested {count}, offset {offset})")
             return samples
@@ -1234,21 +1287,65 @@ Responde SOLO en formato JSON:
         return list(detected) if detected else ["No estructurado"]
 
     def _infer_anomaly_type(self, anomaly: dict) -> str:
-        """Infer anomaly category from explanation and log entry"""
+        """Infer anomaly category using scoring system for better variety"""
         explanation = anomaly.get("explanation", "").lower()
         log_entry = anomaly.get("log_entry", "").lower()
         combined = explanation + " " + log_entry
 
-        if any(kw in combined for kw in ["login", "password", "auth", "failed", "denied", "security", "attack", "malware"]):
-            return "Seguridad"
-        elif any(kw in combined for kw in ["response time", "latency", "slow", "timeout", "performance", "delay"]):
-            return "Performance"
-        elif any(kw in combined for kw in ["network", "connection", "packet", "tcp", "udp", "port", "firewall"]):
-            return "Red"
-        elif any(kw in combined for kw in ["error", "exception", "crash", "stack", "trace", "null"]):
-            return "Comportamiento"
-        else:
-            return "General"
+        # Scoring system - each category gets points based on keyword matches
+        scores = {
+            "Seguridad": 0,
+            "Performance": 0,
+            "Red": 0,
+            "Comportamiento": 0,
+            "General": 0
+        }
+
+        # Security keywords (specific attacks get higher points)
+        if any(kw in combined for kw in ["attack", "malware", "intrusion", "breach", "exploit"]):
+            scores["Seguridad"] += 3
+        if any(kw in combined for kw in ["unauthorized", "injection", "xss", "csrf", "sql injection"]):
+            scores["Seguridad"] += 2
+        if "brute force" in combined or "dictionary" in combined:
+            scores["Seguridad"] += 3
+
+        # Performance keywords
+        perf_words = ["slow", "timeout", "latency", "response time", "performance",
+                      "degradation", "bottleneck", "high load", "resource", "memory", "cpu"]
+        for word in perf_words:
+            if word in combined:
+                scores["Performance"] += 1
+
+        # Network keywords
+        net_words = ["connection refused", "packet loss", "tcp", "udp", "port", "firewall",
+                     "routing", "dns", "subnet", "gateway"]
+        for word in net_words:
+            if word in combined:
+                scores["Red"] += 1
+
+        # Behavior keywords
+        beh_words = ["exception", "crash", "stack trace", "null pointer",
+                     "segmentation fault", "panic", "fatal", "unexpected"]
+        for word in beh_words:
+            if word in combined:
+                scores["Comportamiento"] += 1
+
+        # Score-based fallback
+        score = anomaly.get("score", 0)
+        if score < -0.5:
+            scores["Seguridad"] += 1
+        elif score > 0.3:
+            scores["General"] += 1
+
+        # Find category with highest score
+        max_score = 0
+        result_type = "General"
+        for category, category_score in scores.items():
+            if category_score > max_score:
+                max_score = category_score
+                result_type = category
+
+        return result_type
 
     def _categorize_anomalies(self, anomalies: List[dict]) -> dict:
         """Categorize anomalies by type"""
