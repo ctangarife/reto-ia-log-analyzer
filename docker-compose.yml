@@ -143,40 +143,6 @@ services:
       #ollama-service:
       #  condition: service_healthy
 
-  # ==========================================================================
-  # OLLAMA - Servicio de IA Local con LLMs
-  # ==========================================================================
-  #ollama-service:
-  #  container_name: logs-analyze-ollama
-  #  restart: unless-stopped
-  #  build:
-  #    context: ./
-  #    dockerfile: ./build/ollama/Dockerfile
-  #  deploy:
-  #    resources:
-  #      reservations:
-  #        devices:
-  #          - driver: nvidia
-  #            count: all
-  #            capabilities: [ gpu ]
-  #        limits:
-  #          memory: 16G
-  #  volumes:
-  #    - ./data/models/ollama:/root/.ollama
-  #  ports:
-  #    - "11434:11434"
-  #  env_file:
-  #    - .env
-  #  networks:
-  #    logs_analyze_net:
-  #      aliases:
-  #        - ollama-service
-  #  healthcheck:
-  #    test: [ "CMD", "curl", "-f", "http://localhost:11434/api/tags" ]
-  #    interval: 30s
-  #    timeout: 10s
-  #    retries: 5
-  #    start_period: 90s
 
   # ==========================================================================
   # FRONTEND - Vue 3 Build Container
@@ -239,6 +205,17 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+  
+  log-analyze-certbot:
+    image: certbot/certbot
+    container_name: log-analyze-certbot
+    restart: unless-stopped
+    volumes:
+      - ./server/certbot/conf:/etc/letsencrypt
+      - ./server/certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew; sleep 12h & wait $${!}; done;'"
+    networks:
+      - logs_analyze_net
 
 # ============================================================================
 # REDES

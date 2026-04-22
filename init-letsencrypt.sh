@@ -4,10 +4,11 @@ if ! [ -x "$(command -v docker compose)" ]; then
   echo 'Error: docker-compose is not installed.' >&2
   exit 1
 fi
-domains=(logsanalyzer.ctangarife.com www.logsanalyzer.ctangarife.com)
+# CONFIGURACIÓN - Cambiar estos valores antes de ejecutar
+domains=logsanomaly.ctangarife.com  # CAMBIAR: Tu dominio real
 rsa_key_size=4096
 data_path="./server/certbot"
-email="cristian@ctangarife.com" # Adding a valid address is strongly recommended
+email="cristian@ctangarife.com"  # CAMBIAR: Tu email real
 staging=0 # Set to 1 if you're testing your setup to avoid hitting request limits
 
 if [ -d "$data_path" ]; then
@@ -31,31 +32,29 @@ path="/etc/letsencrypt/live/$domains"
 mkdir -p "$data_path/conf/live/$domains"
 echo "$data_path/conf/live/$domains"
 docker compose run --rm --entrypoint "\
-  openssl req -x509 -nodes -newkey rsa:$rsa_key_size -days 1\
-    -keyout '$path/privkey.pem' \
-    -out '$path/fullchain.pem' \
-    -subj '/CN=localhost'" certbot
+      mkdir -p /etc/letsencrypt/live/$domains && \
+      openssl req -x509 -nodes -newkey rsa:$rsa_key_size -days 1\
+      -keyout '$path/privkey.pem' \
+      -out '$path/fullchain.pem' \
+      -subj '/CN=localhost'" log-analyze-certbot
 echo
 
 
-echo "### Starting nginx ..."
-docker compose up --force-recreate -d nginx
+echo "### Starting logs-analyze-nginx ..."
+docker compose up --force-recreate -d logs-analyze-nginx
 echo
 
 echo "### Deleting dummy certificate for $domains ..."
 docker compose run --rm --entrypoint "\
   rm -Rf /etc/letsencrypt/live/$domains && \
   rm -Rf /etc/letsencrypt/archive/$domains && \
-  rm -Rf /etc/letsencrypt/renewal/$domains.conf" certbot
+  rm -Rf /etc/letsencrypt/renewal/$domains.conf" log-analyze-certbot
 echo
 
 
 echo "### Requesting Let's Encrypt certificate for $domains ..."
 #Join $domains to -d args
-domain_args=""
-for domain in "${domains[@]}"; do
-  domain_args="$domain_args -d $domain"
-done
+domain_args="-d $domains"
 
 # Select appropriate email arg
 case "$email" in
@@ -73,8 +72,8 @@ docker compose run --rm --entrypoint "\
     $domain_args \
     --rsa-key-size $rsa_key_size \
     --agree-tos \
-    --force-renewal" certbot
+    --force-renewal" log-analyze-certbot
 echo
 
-echo "### Reloading nginx ..."
-docker compose exec nginx nginx -s reload
+echo "### Reloading logs-analyze-nginx ..."
+docker compose exec logs-analyze-nginx nginx -s reload
